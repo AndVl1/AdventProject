@@ -1,5 +1,6 @@
 package ru.andvl.advent.advenced.presentation.models
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,7 +28,10 @@ import ru.andvl.advent.advenced.di.ModelsGraph
 import ru.andvl.advent.advenced.domain.model.AiModel
 
 @Composable
-fun ModelsScreen(modifier: Modifier = Modifier) {
+fun ModelsScreen(
+    onModelClick: (String) -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val viewModel: ModelsViewModel = viewModel {
         ModelsViewModel(ModelsGraph.getTopModels)
     }
@@ -35,6 +39,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
     ModelsContent(
         state = state,
         onRetry = viewModel::load,
+        onModelClick = onModelClick,
         modifier = modifier,
     )
 }
@@ -43,6 +48,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
 private fun ModelsContent(
     state: ModelsUiState,
     onRetry: () -> Unit,
+    onModelClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -67,7 +73,7 @@ private fun ModelsContent(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(state.models, key = { it.id }) { model ->
-                    ModelRow(model)
+                    ModelRow(model, onClick = { onModelClick(model.id) })
                 }
             }
         }
@@ -75,8 +81,8 @@ private fun ModelsContent(
 }
 
 @Composable
-private fun ModelRow(model: AiModel) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+private fun ModelRow(model: AiModel, onClick: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
                 text = model.name,
