@@ -1,0 +1,18 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:bookshelf
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+
+bookshelf:
+  jwt:
+    secret: change-me-change-me-change-me-change-me-123456
+    ttl-seconds: 86400
