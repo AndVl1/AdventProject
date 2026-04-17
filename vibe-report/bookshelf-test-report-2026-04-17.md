@@ -82,7 +82,7 @@ Response: 200 OK
 ```
 
 #### Screenshot:
-![Registration successful](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385384482.png)
+![Registration successful - redirect to books page](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/01_registration_redirect.png)
 
 **Status**: ✅ **PASS**
 
@@ -137,7 +137,7 @@ Response: 201 Created
 ```
 
 #### Screenshot:
-![Book added successfully](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385428487.png)
+![Book added successfully - The Great Gatsby visible in list](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/03_book_added.png)
 
 **Status**: ✅ **PASS**
 
@@ -185,7 +185,7 @@ Response: 200 OK
 ```
 
 #### Screenshot:
-![Status changed to Read](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385575766.png)
+![Status changed to Read - book shows updated status](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/04_status_reading.png)
 
 **Status**: ✅ **PASS**
 
@@ -234,7 +234,7 @@ Response: 200 OK
 ```
 
 #### Screenshot:
-![Statistics page](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385637354.png)
+![Statistics page - 4 metrics displayed correctly](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/05_statistics_page.png)
 
 **Status**: ✅ **PASS**
 
@@ -277,7 +277,7 @@ Response: 404 Not Found
 ```
 
 #### Screenshot:
-![Book deleted successfully](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385728166.png)
+![Book deleted successfully - removed from list](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/06_delete_book.png)
 
 **Status**: ✅ **PASS**
 
@@ -524,8 +524,16 @@ Total: 5/5 scenarios passed
 
 ---
 
-**Published Report**: https://gist.github.com/AndVl1/4fe348cb685fa9de8eeb29c9106a1b93
+**Published Report**: https://gist.github.com/AndVl1/1be173f50ec35c2f229050be45f2906c
 
 **Assets Gist (Screenshots)**: https://gist.github.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a
+
+**Screenshots**: 6 key screenshots from Bookshelf testing (00:27-00:28)
+- ✅ Registration redirect
+- ✅ Books page (empty)
+- ✅ Book added
+- ✅ Status changed to Reading
+- ✅ Statistics page
+- ✅ Book deleted
 
 **END OF REPORT**
