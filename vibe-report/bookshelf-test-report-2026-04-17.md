@@ -82,7 +82,7 @@ Response: 200 OK
 ```
 
 #### Screenshot:
-[Registration successful - User redirected to books page]
+![Registration successful](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385384482.png)
 
 **Status**: ✅ **PASS**
 
@@ -137,7 +137,7 @@ Response: 201 Created
 ```
 
 #### Screenshot:
-[Book list showing "The Great Gatsby" added]
+![Book added successfully](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385428487.png)
 
 **Status**: ✅ **PASS**
 
@@ -185,7 +185,7 @@ Response: 200 OK
 ```
 
 #### Screenshot:
-[Book showing status "Read"]
+![Status changed to Read](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385575766.png)
 
 **Status**: ✅ **PASS**
 
@@ -234,7 +234,7 @@ Response: 200 OK
 ```
 
 #### Screenshot:
-[Statistics page showing 4 metric cards]
+![Statistics page](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385637354.png)
 
 **Status**: ✅ **PASS**
 
@@ -277,7 +277,7 @@ Response: 404 Not Found
 ```
 
 #### Screenshot:
-[Book list showing 3 remaining books after deletion]
+![Book deleted successfully](https://gist.githubusercontent.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a/raw/screenshot-1776385728166.png)
 
 **Status**: ✅ **PASS**
 
@@ -524,6 +524,8 @@ Total: 5/5 scenarios passed
 
 ---
 
-**Published Report**: https://gist.github.com/AndVl1/19b929e35474d2375fec05b2cb021d49
+**Published Report**: https://gist.github.com/AndVl1/4fe348cb685fa9de8eeb29c9106a1b93
+
+**Assets Gist (Screenshots)**: https://gist.github.com/AndVl1/fef8dff45045e155551bde0bc7fdd80a
 
 **END OF REPORT**
