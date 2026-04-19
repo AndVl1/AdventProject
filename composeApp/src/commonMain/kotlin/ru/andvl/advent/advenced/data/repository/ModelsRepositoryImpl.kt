@@ -10,4 +10,7 @@ internal class ModelsRepositoryImpl(
 ) : ModelsRepository {
     override suspend fun getModels(): List<AiModel> =
         api.getModels().data.map { it.toDomain() }
+
+    override suspend fun getModelById(modelId: String): AiModel =
+        api.getModel(modelId).toDomain()
 }

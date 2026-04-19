@@ -7,4 +7,7 @@ import io.ktor.client.request.get
 internal class OpenRouterApi(private val client: HttpClient) {
     suspend fun getModels(): OpenRouterModelsResponse =
         client.get("https://openrouter.ai/api/v1/models").body()
+
+    suspend fun getModel(modelId: String): OpenRouterModelDto =
+        client.get("https://openrouter.ai/api/v1/models/$modelId").body()
 }

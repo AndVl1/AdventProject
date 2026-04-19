@@ -27,7 +27,10 @@ import ru.andvl.advent.advenced.di.ModelsGraph
 import ru.andvl.advent.advenced.domain.model.AiModel
 
 @Composable
-fun ModelsScreen(modifier: Modifier = Modifier) {
+fun ModelsScreen(
+    modifier: Modifier = Modifier,
+    onModelClick: (String) -> Unit = {},
+) {
     val viewModel: ModelsViewModel = viewModel {
         ModelsViewModel(ModelsGraph.getTopModels)
     }
@@ -35,6 +38,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
     ModelsContent(
         state = state,
         onRetry = viewModel::load,
+        onModelClick = onModelClick,
         modifier = modifier,
     )
 }
@@ -43,6 +47,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
 private fun ModelsContent(
     state: ModelsUiState,
     onRetry: () -> Unit,
+    onModelClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -67,7 +72,7 @@ private fun ModelsContent(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(state.models, key = { it.id }) { model ->
-                    ModelRow(model)
+                    ModelRow(model, onModelClick)
                 }
             }
         }
@@ -75,8 +80,11 @@ private fun ModelsContent(
 }
 
 @Composable
-private fun ModelRow(model: AiModel) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+private fun ModelRow(model: AiModel, onModelClick: (String) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { onModelClick(model.id) },
+    ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
                 text = model.name,
