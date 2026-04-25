@@ -36,11 +36,25 @@ def normalize(text: str) -> str:
     """Чистим markdown-шум, обрезаем длинные тела."""
     if not text:
         return ""
-    # стрипаем code-fence шум, оставляем содержимое
     text = text.replace("\r\n", "\n").strip()
     if len(text) > MAX_LEN:
         text = text[:MAX_LEN].rsplit("\n", 1)[0] + "\n[...truncated]"
     return text
+
+
+def is_spam_or_html(text: str) -> bool:
+    """Отсекаем HTML-портянки, спам-pitch-deck'и, чистый код без вопроса."""
+    low = text.lower()
+    if "<!doctype" in low or "<html" in low:
+        return True
+    # слишком много html-тегов
+    tag_count = low.count("<") + low.count("</")
+    if tag_count > 30 and len(text) > 500:
+        return True
+    # чисто CSS/JS блок без описания
+    if low.count("{") > 15 and low.count("}") > 15 and "function" not in low and "issue" not in low:
+        return True
+    return False
 
 
 def fetch(repo_owner: str, repo_name: str, token: str | None) -> list[dict]:
@@ -63,6 +77,7 @@ def fetch(repo_owner: str, repo_name: str, token: str | None) -> list[dict]:
 
     seen_pr = 0
     seen_short = 0
+    seen_spam = 0
     out: list[dict] = []
     for issue in raw:
         if "pull_request" in issue:
@@ -73,6 +88,9 @@ def fetch(repo_owner: str, repo_name: str, token: str | None) -> list[dict]:
         text = f"{title}\n\n{body}".strip() if body else title
         if len(text) < MIN_LEN:
             seen_short += 1
+            continue
+        if is_spam_or_html(text):
+            seen_spam += 1
             continue
         out.append({
             "id": f"{repo_owner}/{repo_name}#{issue['number']}",
@@ -85,7 +103,8 @@ def fetch(repo_owner: str, repo_name: str, token: str | None) -> list[dict]:
             break
 
     print(
-        f"  raw={len(raw)} pr_skip={seen_pr} short_skip={seen_short} kept={len(out)}",
+        f"  raw={len(raw)} pr_skip={seen_pr} short_skip={seen_short} "
+        f"spam_skip={seen_spam} kept={len(out)}",
         file=sys.stderr,
     )
     return out
