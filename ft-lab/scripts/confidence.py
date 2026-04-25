@@ -157,6 +157,68 @@ def joint_prob(token_lps: list[dict]) -> float:
     return math.exp(sum(t["logprob"] for t in token_lps))
 
 
+def score(
+    client: OpenAI,
+    model: str,
+    user_text: str,
+    *,
+    use_grammar: bool = True,
+    no_think: bool = False,
+    ok_threshold: float = 0.85,
+    unsure_threshold: float = 0.5,
+) -> dict:
+    """Scoring через logprobs. Возвращает status + per-field prob.
+
+    status:
+      OK     — min_prob >= ok_threshold
+      UNSURE — unsure_threshold <= min_prob < ok_threshold
+      FAIL   — min_prob < unsure_threshold или ответ не парсится
+    """
+    answer, tokens, meta = call_with_logprobs(
+        client, model, user_text,
+        use_grammar=use_grammar, no_think=no_think,
+    )
+    parsed: dict | None = None
+    try:
+        parsed = json.loads(answer)
+    except Exception:
+        return {
+            "status": "FAIL",
+            "answer": answer,
+            "parsed": None,
+            "category_prob": 0.0,
+            "sentiment_prob": 0.0,
+            "min_prob": 0.0,
+            **meta,
+        }
+
+    cat_v = parsed.get("category", "") if isinstance(parsed, dict) else ""
+    sent_v = parsed.get("sentiment", "") if isinstance(parsed, dict) else ""
+    cat_toks = find_value_tokens(tokens, "category", cat_v) if cat_v else []
+    sent_toks = find_value_tokens(tokens, "sentiment", sent_v) if sent_v else []
+    cat_p = joint_prob(cat_toks)
+    sent_p = joint_prob(sent_toks)
+    min_p = min(cat_p, sent_p) if (cat_toks and sent_toks) else 0.0
+
+    if min_p >= ok_threshold:
+        status = "OK"
+    elif min_p >= unsure_threshold:
+        status = "UNSURE"
+    else:
+        status = "FAIL"
+
+    return {
+        "status": status,
+        "answer": answer,
+        "parsed": parsed,
+        "category_prob": round(cat_p, 4),
+        "sentiment_prob": round(sent_p, 4),
+        "min_prob": round(min_p, 4),
+        "n_tokens_total": len(tokens),
+        **meta,
+    }
+
+
 def evaluate(answer: str, expected: dict) -> dict:
     parsed_ok = False
     cat_match = False
