@@ -21,6 +21,7 @@ import os
 import random
 import sys
 import time
+import traceback
 from collections import Counter
 from pathlib import Path
 
@@ -150,6 +151,10 @@ def main() -> int:
                         help="целевое суммарное (labeled+synth) кол-во на пару (cat,sent)")
     parser.add_argument("--resume", action="store_true",
                         help="не перегенерировать уже существующее в synthetic.jsonl")
+    parser.add_argument("--strict", action="store_true",
+                        help="стоп на первой ошибке с полным traceback")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="максимум запросов суммарно (для отладки)")
     args = parser.parse_args()
 
     base_url = os.getenv("TIER2_BASE_URL", "http://127.0.0.1:8081/v1")
@@ -191,9 +196,13 @@ def main() -> int:
     written = 0
     failed = 0
 
+    done_count = 0
     try:
         for (cat, sent), need in plan.items():
             for i in range(need):
+                if args.limit is not None and done_count >= args.limit:
+                    break
+                done_count += 1
                 topic = rng.choice(TOPICS)
                 prompt = PROMPT_TMPL.format(
                     category=cat,
@@ -207,6 +216,7 @@ def main() -> int:
                     text = clean(raw)
                     if len(text) < 30:
                         failed += 1
+                        tqdm.write(f"[SHORT] {cat}/{sent} #{i}: len={len(text)} raw={raw!r}")
                         pbar.update(1)
                         continue
                     idx = existing[(cat, sent)] + i
@@ -221,9 +231,15 @@ def main() -> int:
                     written += 1
                 except Exception as e:
                     failed += 1
-                    print(f"\n[WARN] {cat}/{sent} #{i}: {e}", file=sys.stderr)
+                    tqdm.write(f"[ERROR] {cat}/{sent} #{i}: {type(e).__name__}: {e}")
+                    if args.strict or failed == 1:
+                        tqdm.write(traceback.format_exc())
+                    if args.strict:
+                        raise
                     time.sleep(1.0)
                 pbar.update(1)
+            if args.limit is not None and done_count >= args.limit:
+                break
     finally:
         pbar.close()
         out_f.close()
