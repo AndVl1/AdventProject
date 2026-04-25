@@ -2,110 +2,110 @@
 
 ## Задача
 
-Каскад двух llama-server'ов: дешёвый Tier 1 (Qwen2.5-3B) и тяжёлый Tier 2 (Qwen3.6-35B-A3B). Эскалация по сигналам дня 7 (constraint / scoring / selfcheck). Цель — снизить cost vs «всё на Tier 2» при минимальной просадке accuracy.
+Каскад двух llama-server'ов: Tier 1 (Qwen2.5-3B-Instruct) и Tier 2 (Qwen3.6-35B-A3B Q3_K_S). Эскалация по сигналам дня 7. Цель — снизить cost vs «всё на Tier 2» при минимальной просадке accuracy.
 
 ## Реализация — `ft-lab/scripts/router.py`
 
 - `Tier(name, base_url, model, no_think)` — расширяемый интерфейс. День 10 добавит `Tier 0 = micro` в начало списка.
-- `Tier.predict(text, with_signals=True/False)`:
-  - Tier 1 — `with_signals=True`, гонит constraint + scoring + selfcheck (всё из дня 7).
-  - Tier 2 — `with_signals=False`, только constraint (доверие выше, экономим запросы).
-- `decide_escalate(tier1_result)` — сигналы только дня 7, без эвристики по длине:
+- `Tier.predict(text, with_signals=True/False)`: Tier1 гонит выбранные сигналы (constraint обязателен, scoring/selfcheck по cfg), Tier2 — только constraint.
+- `decide_escalate(tier1_result, cfg)` — сигналы:
   - `constraint=FAIL` → `constraint_fail`
-  - `scoring.min_prob < 0.5` → `scoring_lowprob(...)` (порог = граница UNSURE/FAIL дня 7)
+  - `scoring.min_prob < cfg.escalate_threshold` → `scoring_lowprob(...)`
   - `selfcheck.stage_b.agree=false` → `selfcheck_disagree`
-- **fix selfcheck НЕ применяется** локально (вывод дня 7: маленькая модель — плохой судья).
+- `RunConfig` — флаги ablation: `use_selfcheck`, `use_scoring`, `scoring_no_grammar`, `escalate_threshold`, `tier1_thinking`, `tier2_thinking`. Авто-генерация tag для имён отчётов.
 
 ## Тестовый набор (30 примеров)
 
 - 10 valid из `train/valid.jsonl` (gold labels из дня 6).
 - 10 edge_cases (5 borderline + 5 noisy) из дня 7.
-- 10 long (1100-1760 символов JSON-строки): 3 bug, 2 billing, 2 feature_request, 2 how_to, 1 other. Реалистичные кейсы — bug-репорты со stack trace, billing с историей, how-to про API.
+- 10 long (1100-1760 символов): 3 bug, 2 billing, 2 feature_request, 2 how_to, 1 other.
 
-## Результаты
+## Результаты ablation (5 прогонов)
 
-### Сводка router vs baseline (всё на Tier 2)
+| конфигурация | router acc | sent acc | router lat (ms) | router tokens | escalation rate |
+|--------------|:---:|:---:|:---:|:---:|:---:|
+| `default` (constraint+scoring+selfcheck, GBNF, thr=0.5) | 56.7% | 86.7% | 2108 | 32599 | 53% |
+| `t2think` (default + thinking на Tier2) | 53.3% | 83.3% | 6493 | 48348 | 53% |
+| `noslfchk` (без selfcheck) | 50.0% | 83.3% | **544** | **12859** | 3% |
+| `noslfchk_nogbnf_thr085` (scoring без GBNF, thr=0.85) | 56.7% | 83.3% | 597 | 13624 | 17% |
+| **`noslfchk_nogbnf_thr095`** (scoring без GBNF, thr=0.95) | **60.0%** | **86.7%** | 613 | 13739 | 20% |
 
-| метрика | router | baseline | Δ |
-|---------|:------:|:--------:|:--:|
-| joint accuracy | 56.7% | 63.3% | **-6.6 п.п.** |
-| category accuracy | 66.7% | 73.3% | -6.6 п.п. |
-| sentiment accuracy | 86.7% | 86.7% | 0 |
-| avg wall latency | 2108 ms | 650 ms | **+3.2× медленнее** |
-| p50 / p95 latency | 2018 / 3561 ms | 590 / 965 ms | хуже по обоим |
-| total tokens | 32599 | 6143 | **+5.3× дороже** |
+Baseline (всё на Tier 2 без thinking): **63.3% acc / 528 ms / 6143 tokens**.
 
-**Router проиграл по всем метрикам, кроме sentiment (равенство).**
+### Победитель: `noslfchk_nogbnf_thr095`
 
-### Маршрутизация
+Vs `default-router`:
+- Accuracy: 56.7% → **60.0%** (+3.3 п.п.)
+- Sentiment: 86.7% → 86.7% (без потерь)
+- Latency: 2108 → 613 ms (**-71%**)
+- Tokens: 32599 → 13739 (**-58%**)
+- Эскалация: 16/30 → 6/30 (все осмысленные — `scoring_lowprob` 0.63/0.66/0.81/0.92 + `scoring_fail` 0.21)
 
-- На Tier 1 осталось: 14/30 (47%)
-- Эскалировано на Tier 2: 16/30 (53%)
-- Причины:
-  - `selfcheck_disagree`: **15** ← главный (и плохой) триггер
-  - `scoring_fail`: 1
-  - `constraint_fail`: 0
-- На correct subset (10): эскалировано 7/10, из них 2/7 правильны после Tier 2.
+Vs `baseline (all-T2)`:
+- Accuracy: 60.0% vs 63.3% (-3.3 п.п.)
+- Latency: 613 vs 528 ms (+16%)
+- Tokens: 13739 vs 6143 (+2.2×)
 
-### По типам входа
+### Per-subset (`thr095` vs `default`)
 
-| kind | n | joint_acc router | joint_acc baseline | tier1_only |
-|------|---|:----------------:|:------------------:|:----------:|
-| correct | 10 | 30% | 30% | 3 |
-| borderline | 5 | 60% | 80% | 2 |
-| noisy | 5 | 80% | 100% | 3 |
-| long | 10 | 70% | 70% | 6 |
+| kind | default | thr095 | Δ |
+|------|:-------:|:------:|:-:|
+| correct | 30% | 30% | 0 (потолок данных) |
+| borderline | 60% | 60% | 0 |
+| noisy | 80% | **100%** | **+20** |
+| long | 70% | 70% | 0 |
 
-Long лучше всего поймал Tier 1 (6/10 без эскалации, 70% acc) — структурированные тикеты с явной семантикой не путают модель.
+Ключевая эскалация: `edge/borderline/03` с `min_prob=0.92` → T2 → правильный ответ. Эту границу `thr085` пропускал.
 
-### Latency breakdown
+## Анализ
 
-- Tier 1 (3 проверки): avg **1689 ms**, median 1458 ms, max 2649 ms.
-- Tier 2 (1 constraint): avg **786 ms**, median 653 ms.
-- **Один Tier 1 уже медленнее одного Tier 2.** Как только эскалируем — общее время > 2× от baseline.
+### 1. Selfcheck выкинуть из online (подтверждено двумя прогонами)
 
-## Анализ: почему router проиграл
+`default` vs `noslfchk`: эскалация 53% → 3%, latency -74%, accuracy -6.7 п.п. Selfcheck даёт сигнал, но шумный — 15/30 эскалаций, из которых половина без выигрыша на correct subset. Tier1 пайплайн (3 LLM-вызова) сам в 2× медленнее одного Tier2.
 
-### 1. Selfcheck — слишком триггерный (50% эскалаций без смысла)
+### 2. GBNF маскирует logprobs
 
-15/30 `selfcheck_disagree`. На correct subset selfcheck сработал «не согласен» 7 раз — но gold-метки из дня 6 уже подтверждают что 7/10 синтетических correct реально неверно размечены (`category` промахи). Selfcheck **правильно** сомневается, но Tier 2 тоже не вытягивает — потолок данных, а не модели.
+С GBNF `scoring.min_prob` почти всегда ≥0.95 — порог 0.5 не срабатывает (1/30 эскалаций). Без GBNF честные logprobs дают разброс 0.20-0.99 — порог становится осмысленным.
 
-На borderline/noisy/long selfcheck эскалирует «по форме» — реагирует на любую двусмысленность, даже когда исходный ответ Tier 1 верен. Из 8 эскалаций на edge — 5 случаев когда Tier 1 уже был прав.
+### 3. Thinking на Tier2 — отрицательный сигнал
 
-### 2. Tier 1 пайплайн (3 запроса) тяжелее чем Tier 2 (1 запрос)
+Reasoning ухудшил accuracy на 3.3 п.п. для router и 3.3 п.п. для baseline. На noisy просел особенно (-20 п.п.) — модель оверпарсит эмоджи и опечатки. Latency baseline +14.5×.
 
-| | latency | tokens |
-|---|---|---|
-| Tier 1 (3 проверки) | 1689 ms | ~1100 |
-| Tier 2 (1 constraint) | 786 ms | ~200 |
+### 4. Синтетика correct гнилая
 
-Это инвертирует логику каскада: «дешёвый-сначала» оказывается **дороже** «дорогого-всегда». Корневая причина — selfcheck-этап дня 7 делает 2 LLM-вызова с GBNF, plus scoring отдельный вызов.
+На correct subset acc=30% во всех прогонах включая baseline — потолок данных, не моделей. Никакая конфигурация не починит gold-labels.
 
-### 3. Синтетика correct неверно размечена
+### 5. Router pareto-проигрывает baseline на этой задаче
 
-Baseline accuracy на correct subset — 30% (3/10). Это потолок самих данных. Никакой router не починит проблему gold-labels.
+Tier2 35B-A3B Q3_K_S без thinking — 528 ms на запрос. Tier1 + сигналы — 500 ms. Эскалация добавляет 20% запросов. Router при таких latency не окупается.
 
-## Решения для следующего этапа
+**Каскад имеет смысл** когда:
+- Tier2 действительно дорог (платный API, thinking-enabled, бóльшая модель).
+- Большинство запросов простые (≥80% не требуют эскалации).
 
-1. **Online-routing должен быть дешёвым**. Удалить selfcheck из Tier 1 пайплайна — оставить только scoring (logprobs, +0 токенов overhead, побочный продукт генерации). Constraint бесплатен (pass_first=20/20 в день 7). Целевой Tier 1 latency ≤ 250 ms.
-2. **Эскалация — только по logprobs**: `min_prob < 0.85` → Tier 2. Чтобы не зависеть от шумного selfcheck.
-3. **Selfcheck — только для калибровки оффлайн** (выбор thresholds), не в проде.
-4. **Перед днём 9 пересобрать correct-subset вручную** или взять реальные тикеты с GitHub Issues (план дня 6 это позволяет).
+В нашем сценарии оба условия не выполнены.
+
+## Решения для дня 9 / 10
+
+1. **Online-сигнал**: только scoring без GBNF + threshold 0.95. Selfcheck выкинуть из online, оставить для оффлайн калибровки.
+2. **Day 9 multistage**: использовать ту же эскалационную логику между этапами 1 (нормализация) и 3 (extraction), не между моделями.
+3. **Day 10 micro-tier**: micro станет Tier 0 — самый дешёвый. На нём те же сигналы (lowprob threshold) для эскалации в Tier 1. Архитектурно расширение списка `tiers` в router.py — одна строка.
+4. **Перед днём 9 пересобрать correct-subset вручную** (10 примеров, час работы) — иначе потолок 30% acc.
 
 ## Что не покрыто
 
-- **Tier 2 без сигналов на correct тоже даёт 30%** — значит проблема не в маленькой модели, а в данных. Это надо подсветить отдельно при ручной разметке.
-- **`scoring_lowprob` ни разу не сработал** (порог 0.5 — слишком низкий для GBNF). Поднимать до 0.85 — но тогда эскалаций будет ~20/30, ещё хуже.
-- **Дополнительный logprobs-проход без GBNF** (вывод дня 7 #3) — не делали, дорого без явной выгоды.
+- **Селективный selfcheck** (запускать только когда scoring.min_prob в [0.7, 0.9]) — потенциально лучший trade-off, но требует условной логики, не однострочный флаг.
+- **Tier2 c reasoning на эскалациях** — может выправить accuracy на borderline, но дорого. Не приоритет.
+- **Воспроизведение на ≥100 примерах** — текущие 30 шумные, разброс между прогонами 3-5 п.п.
 
 ## Артефакты
 
-- `ft-lab/scripts/router.py` — Tier + decide_escalate + run_router/run_baseline_tier2
+- `ft-lab/scripts/router.py` — Tier + RunConfig + ablation flags
 - `ft-lab/data/eval/long_cases.jsonl` — 10 длинных тикетов
-- `ft-lab/results/router_runs.jsonl` — 30 строк per-row router
-- `ft-lab/results/router_baseline.jsonl` — 30 строк baseline (Tier 2)
-- `ft-lab/results/day8-report.md` — таблицы
+- `ft-lab/results/router-{tag}.jsonl`, `router_baseline-{tag}.jsonl` — per-row для каждого ablation
+- `ft-lab/results/day8-{tag}-report.md` — таблицы для каждого прогона
+- 5 ablation tag'ов: `default`, `t2think`, `noslfchk`, `noslfchk_nogbnf_thr085`, `noslfchk_nogbnf_thr095`
 
 ## Вывод одной строкой
 
-Двухступенчатый каскад с тяжёлым Tier 1 пайплайном (3 проверки) **проигрывает** прямому походу на Tier 2 по latency/cost/accuracy. Day 9 multistage и Day 10 micro-tier должны строиться от **дешёвого** Tier 0/1, а selfcheck — оффлайн-инструмент калибровки, не online-сигнал.
+Лучшая online-конфигурация: `--no-selfcheck --scoring-no-grammar --escalate-threshold 0.95`. Accuracy +3.3 п.п. над default-router, latency -71%, tokens -58%. Однако baseline (всё на Tier2) всё равно лучше по cost/accuracy на текущей задаче — каскад не оправдан, пока Tier2 не станет реально дороже Tier1 (день 10 micro-tier должен это исправить).
