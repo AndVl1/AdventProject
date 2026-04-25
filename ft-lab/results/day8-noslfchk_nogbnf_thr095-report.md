@@ -22,8 +22,8 @@ Total: **30** примеров (10 valid + 10 edge + 10 long).
 | joint accuracy | 60.0% | 63.3% |
 | category accuracy | 70.0% | 73.3% |
 | sentiment accuracy | 86.7% | 86.7% |
-| avg wall latency | 613.0 ms | 527.9 ms |
-| p50 / p95 latency | 503.3 / 1217.2 ms | 511.6 / 704.1 ms |
+| avg wall latency | 627.5 ms | 536.4 ms |
+| p50 / p95 latency | 498.4 / 1316.6 ms | 528.8 / 703.0 ms |
 | total tokens | 13739 | 6143 |
 
 ## Маршрутизация
@@ -44,10 +44,10 @@ Total: **30** примеров (10 valid + 10 edge + 10 long).
 
 | kind | n | joint_acc | tier1_only | escalated | avg_lat ms |
 |------|---|-----------|------------|-----------|-----------:|
-| correct | 10 | 30% | 7 | 3 | 613.9 |
-| borderline | 5 | 60% | 4 | 1 | 578.7 |
-| noisy | 5 | 100% | 4 | 1 | 575.5 |
-| long | 10 | 70% | 9 | 1 | 648.0 |
+| correct | 10 | 30% | 7 | 3 | 658.7 |
+| borderline | 5 | 60% | 4 | 1 | 576.7 |
+| noisy | 5 | 100% | 4 | 1 | 579.0 |
+| long | 10 | 70% | 9 | 1 | 646.1 |
 
 ## Per-row
 
