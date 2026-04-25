@@ -18,10 +18,13 @@ CLI:
     python scripts/multistage.py --mode multi
     python scripts/multistage.py --mode both         # дефолт — оба и сравнительный отчёт
     python scripts/multistage.py --tag custom        # суффикс отчётов
+    python scripts/multistage.py --remote anthropic/claude-haiku-4-5  # OpenRouter режим
 
 Env:
     TIER1_BASE_URL, TIER1_MODEL  (default 8080, qwen2.5-3b)
     TIER2_BASE_URL, TIER2_MODEL  (default 8081, qwen3.6-35b-a3b)
+    OPENROUTER_API_KEY           (для --remote)
+    OPENROUTER_BASE_URL          (default https://openrouter.ai/api/v1)
 """
 from __future__ import annotations
 
@@ -180,12 +183,23 @@ def _call(
     grammar: str | None,
     no_think: bool,
     max_tokens: int = 200,
+    remote: bool = False,
 ) -> tuple[str, dict]:
+    """Унифицированный вызов: llama.cpp (с GBNF) или OpenRouter (без — JSON через response_format).
+
+    remote=True:
+      - GBNF не передаём (OpenRouter не поддерживает llama.cpp grammar).
+      - chat_template_kwargs не передаём (llama.cpp-only).
+      - response_format={"type":"json_object"} — мягкое требование JSON.
+    """
     extra: dict = {}
-    if grammar:
-        extra["grammar"] = grammar
-    if no_think:
-        extra["chat_template_kwargs"] = {"enable_thinking": False}
+    if remote:
+        extra["response_format"] = {"type": "json_object"}
+    else:
+        if grammar:
+            extra["grammar"] = grammar
+        if no_think:
+            extra["chat_template_kwargs"] = {"enable_thinking": False}
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -231,13 +245,34 @@ class Tier:
     base_url: str
     model: str
     no_think: bool = True
+    api_key: str = "local"
+    is_remote: bool = False
     client: OpenAI = field(init=False)
 
     def __post_init__(self):
-        self.client = OpenAI(base_url=self.base_url, api_key="local", timeout=240)
+        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=240)
 
 
-def build_tiers() -> tuple[Tier, Tier]:
+def build_tiers(remote_model: str | None = None) -> tuple[Tier, Tier]:
+    """Если задан remote_model — оба тира уезжают в OpenRouter с этой моделью.
+    OPENROUTER_API_KEY обязателен. OPENROUTER_BASE_URL — опционально (default OpenRouter).
+    """
+    if remote_model:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise SystemExit("OPENROUTER_API_KEY env var не задан — задай его для --remote режима")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        t1 = Tier(
+            name="tier1", base_url=base_url, model=remote_model,
+            api_key=api_key, is_remote=True, no_think=False,
+        )
+        # tier2 = тот же remote (мы тестируем одну модель целиком)
+        t2 = Tier(
+            name="tier2", base_url=base_url, model=remote_model,
+            api_key=api_key, is_remote=True, no_think=False,
+        )
+        return t1, t2
+
     t1 = Tier(
         name="tier1",
         base_url=os.getenv("TIER1_BASE_URL", "http://127.0.0.1:8080/v1"),
@@ -261,6 +296,7 @@ def run_mono(t1: Tier, t2: Tier, user_text: str) -> dict:
     answer, meta = _call(
         t1.client, t1.model, SYS_MONO, user_text,
         grammar=GBNF_FULL, no_think=t1.no_think, max_tokens=200,
+        remote=t1.is_remote,
     )
     parsed = _safe_json(answer) or {}
     return {
@@ -286,6 +322,7 @@ def run_multi(t1: Tier, t2: Tier, user_text: str) -> dict:
     norm_answer, m1 = _call(
         t1.client, t1.model, SYS_NORMALIZE, user_text,
         grammar=GBNF_NORMALIZE, no_think=t1.no_think, max_tokens=300,
+        remote=t1.is_remote,
     )
     norm = _safe_json(norm_answer) or {}
     calls.append({"stage": "normalize", "tier": t1.name, **m1})
@@ -307,14 +344,17 @@ def run_multi(t1: Tier, t2: Tier, user_text: str) -> dict:
     cat_a, mc = _call(
         t1.client, t1.model, SYS_CATEGORY, norm_block,
         grammar=GBNF_ENUM_CATEGORY, no_think=t1.no_think, max_tokens=40,
+        remote=t1.is_remote,
     )
     sent_a, ms = _call(
         t1.client, t1.model, SYS_SENTIMENT, norm_block,
         grammar=GBNF_ENUM_SENTIMENT, no_think=t1.no_think, max_tokens=40,
+        remote=t1.is_remote,
     )
     sev_a, msv = _call(
         t1.client, t1.model, SYS_SEVERITY, norm_block,
         grammar=GBNF_ENUM_SEVERITY, no_think=t1.no_think, max_tokens=40,
+        remote=t1.is_remote,
     )
     calls.append({"stage": "category", "tier": t1.name, **mc})
     calls.append({"stage": "sentiment", "tier": t1.name, **ms})
@@ -333,11 +373,16 @@ def run_multi(t1: Tier, t2: Tier, user_text: str) -> dict:
         or "default_t1"
     )
 
+    # в remote-режиме оба тира — одна и та же модель → роутить бесполезно, всегда T1
+    if t1.is_remote and t2.is_remote and t1.model == t2.model:
+        route_to_t2 = False
+        route_reason = "remote_single_model"
     target = t2 if route_to_t2 else t1
     ca_answer, m3 = _call(
         target.client, target.model, SYS_COMPONENT_ACTION,
         norm_block + f"\n\nИзвестно: category={cat}, severity={sev}.",
         grammar=GBNF_COMPONENT_ACTION, no_think=target.no_think, max_tokens=120,
+        remote=target.is_remote,
     )
     calls.append({"stage": "extract", "tier": target.name, **m3})
     tier_usage[target.name] += 1
@@ -528,16 +573,28 @@ def write_report(mono: dict | None, multi: dict | None, tag: str, items_n: int):
 # ---------- main ----------
 
 
+def _slugify(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["mono", "multi", "both"], default="both")
-    ap.add_argument("--tag", default="default")
+    ap.add_argument("--tag", default=None,
+                    help="Суффикс отчётов. Если не задан и --remote — автоген из имени модели.")
+    ap.add_argument("--remote", default=None, metavar="MODEL",
+                    help="OpenRouter режим: использовать указанную модель для всех вызовов. "
+                         "Требует OPENROUTER_API_KEY в env. Пример: --remote anthropic/claude-haiku-4-5")
     args = ap.parse_args()
 
-    items = load_eval()
-    t1, t2 = build_tiers()
+    if args.tag is None:
+        args.tag = f"remote-{_slugify(args.remote)}" if args.remote else "default"
 
-    print(f"Eval items: {len(items)} | T1={t1.model} T2={t2.model}")
+    items = load_eval()
+    t1, t2 = build_tiers(remote_model=args.remote)
+
+    location = "REMOTE (OpenRouter)" if args.remote else "LOCAL"
+    print(f"[{location}] Eval items: {len(items)} | T1={t1.model} T2={t2.model}")
 
     mono_agg = multi_agg = None
 
