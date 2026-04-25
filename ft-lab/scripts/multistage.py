@@ -19,6 +19,7 @@ CLI:
     python scripts/multistage.py --mode both         # дефолт — оба и сравнительный отчёт
     python scripts/multistage.py --tag custom        # суффикс отчётов
     python scripts/multistage.py --remote anthropic/claude-haiku-4-5  # OpenRouter режим
+    python scripts/multistage.py --tier2-only                        # baseline на локальном T2
 
 Env:
     TIER1_BASE_URL, TIER1_MODEL  (default 8080, qwen2.5-3b)
@@ -253,9 +254,15 @@ class Tier:
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=240)
 
 
-def build_tiers(remote_model: str | None = None) -> tuple[Tier, Tier]:
+def build_tiers(
+    remote_model: str | None = None,
+    tier2_only: bool = False,
+) -> tuple[Tier, Tier]:
     """Если задан remote_model — оба тира уезжают в OpenRouter с этой моделью.
     OPENROUTER_API_KEY обязателен. OPENROUTER_BASE_URL — опционально (default OpenRouter).
+
+    tier2_only=True: T1 указывает на ту же модель что T2 (local Qwen3.6-35B). Используется
+    для baseline-замера "всё на сильной модели". Несовместим с --remote.
     """
     if remote_model:
         api_key = os.getenv("OPENROUTER_API_KEY")
@@ -273,18 +280,26 @@ def build_tiers(remote_model: str | None = None) -> tuple[Tier, Tier]:
         )
         return t1, t2
 
-    t1 = Tier(
-        name="tier1",
-        base_url=os.getenv("TIER1_BASE_URL", "http://127.0.0.1:8080/v1"),
-        model=os.getenv("TIER1_MODEL", "qwen2.5-3b"),
-        no_think=True,
-    )
     t2 = Tier(
         name="tier2",
         base_url=os.getenv("TIER2_BASE_URL", "http://127.0.0.1:8081/v1"),
         model=os.getenv("TIER2_MODEL", "qwen3.6-35b-a3b"),
         no_think=True,
     )
+    if tier2_only:
+        t1 = Tier(
+            name="tier1",
+            base_url=t2.base_url,
+            model=t2.model,
+            no_think=True,
+        )
+    else:
+        t1 = Tier(
+            name="tier1",
+            base_url=os.getenv("TIER1_BASE_URL", "http://127.0.0.1:8080/v1"),
+            model=os.getenv("TIER1_MODEL", "qwen2.5-3b"),
+            no_think=True,
+        )
     return t1, t2
 
 
@@ -585,15 +600,31 @@ def main():
     ap.add_argument("--remote", default=None, metavar="MODEL",
                     help="OpenRouter режим: использовать указанную модель для всех вызовов. "
                          "Требует OPENROUTER_API_KEY в env. Пример: --remote anthropic/claude-haiku-4-5")
+    ap.add_argument("--tier2-only", action="store_true",
+                    help="Baseline: пустить весь pipeline на локальном Tier2 (Qwen3.6-35B). "
+                         "Несовместим с --remote.")
     args = ap.parse_args()
 
+    if args.remote and args.tier2_only:
+        raise SystemExit("--remote и --tier2-only нельзя одновременно")
+
     if args.tag is None:
-        args.tag = f"remote-{_slugify(args.remote)}" if args.remote else "default"
+        if args.remote:
+            args.tag = f"remote-{_slugify(args.remote)}"
+        elif args.tier2_only:
+            args.tag = "tier2only"
+        else:
+            args.tag = "default"
 
     items = load_eval()
-    t1, t2 = build_tiers(remote_model=args.remote)
+    t1, t2 = build_tiers(remote_model=args.remote, tier2_only=args.tier2_only)
 
-    location = "REMOTE (OpenRouter)" if args.remote else "LOCAL"
+    if args.remote:
+        location = "REMOTE (OpenRouter)"
+    elif args.tier2_only:
+        location = "LOCAL (tier2-only baseline)"
+    else:
+        location = "LOCAL"
     print(f"[{location}] Eval items: {len(items)} | T1={t1.model} T2={t2.model}")
 
     mono_agg = multi_agg = None
