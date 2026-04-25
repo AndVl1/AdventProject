@@ -14,7 +14,7 @@
 
 | Назначение | Файл / репо | Размер |
 |------------|-------------|--------|
-| Tier 2 / teacher | `unsloth/Qwen3-30B-A3B-GGUF:UD-Q3_K_S` | ~14 GB |
+| Tier 2 / teacher | `unsloth/Qwen3-30B-A3B-GGUF` (UD-Q4_K_XL) | ~18 GB |
 | FT-base | `mlx-community/Qwen2.5-3B-Instruct-bf16` | ~6 GB |
 | FT-result (Tier 1) | `models/ft-q4km.gguf` (после дня 6) | ~2 GB |
 
@@ -30,16 +30,18 @@ cp .env.example .env
 ### Запуск моделей через llama-server -hf (тянет с HF в кэш)
 
 ```bash
-# Tier 2 / teacher — Qwen3-30B-A3B MoE (UD-Q3_K_S, ~14 GB)
+# Tier 2 / teacher — Qwen3-30B-A3B MoE (UD-Q4_K_XL, ~18 GB)
 llama-server \
-  -hf unsloth/Qwen3-30B-A3B-GGUF:UD-Q3_K_S \
+  --hf-repo unsloth/Qwen3-30B-A3B-GGUF \
+  --hf-file Qwen3-30B-A3B-UD-Q4_K_XL.gguf \
   --host 127.0.0.1 --port 8081 \
   --n-gpu-layers 999 --ctx-size 8192 \
   --jinja
 
 # Tier 1 / FT-base — Qwen2.5-3B-Instruct Q4_K_M (~2 GB)
 llama-server \
-  -hf bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_K_M \
+  --hf-repo bartowski/Qwen2.5-3B-Instruct-GGUF \
+  --hf-file Qwen2.5-3B-Instruct-Q4_K_M.gguf \
   --host 127.0.0.1 --port 8080 \
   --n-gpu-layers 999 --ctx-size 4096 \
   --jinja
@@ -49,13 +51,14 @@ llama-server \
 
 Флаг `--jinja` нужен для Qwen3 chat-template (иначе формат сломается). Для Qwen2.5 можно опустить — он есть в metadata GGUF.
 
-Альтернативно через `--hf-repo` + `--hf-file` (старый стиль):
-```bash
-llama-server \
-  --hf-repo unsloth/Qwen3-30B-A3B-GGUF \
-  --hf-file Qwen3-30B-A3B-UD-Q3_K_S.gguf \
-  --host 127.0.0.1 --port 8081 --n-gpu-layers 999 --ctx-size 8192 --jinja
-```
+Альтернативные quant'ы Qwen3-30B-A3B (если 18 GB много или хочется качества выше):
+
+| Файл | RAM | Заметка |
+|------|-----|---------|
+| `Qwen3-30B-A3B-UD-Q4_K_XL.gguf` | ~18 GB | рекомендуется (M4 Pro 48 GB) |
+| `Qwen3-30B-A3B-Q4_K_M.gguf` | ~17 GB | стандартный без unsloth dynamic |
+| `Qwen3-30B-A3B-UD-Q3_K_XL.gguf` | ~13 GB | если жмёт по памяти |
+| `Qwen3-30B-A3B-Q5_K_M.gguf` | ~21 GB | максимум качества, ещё влезает |
 
 ## Пайплайн дня 6
 
