@@ -1,22 +1,36 @@
-"""День 8 — Routing Tier1 → Tier2.
+"""День 8 — Routing Tier1 → Tier2 + ablation flags.
 
-Кэскад двух llama-server'ов:
+Каскад двух llama-server'ов:
 - Tier 1: Qwen2.5-3B-Instruct (FT-target дня 6) на :8080.
 - Tier 2: Qwen3.6-35B-A3B (MoE, teacher) на :8081.
 
 Сигналы эскалации (все из дня 7, без fast-path по длине):
-- constraint.status == FAIL          (формат сломался)
-- selfcheck.stage_b.agree == False   (модель не согласилась с самой собой)
-- scoring.min_prob < UNSURE_THRESHOLD (низкая уверенность по logprobs)
+- constraint.status == FAIL              (формат сломался)
+- selfcheck.stage_b.agree == False        (модель не согласилась с самой собой)
+- scoring.min_prob < escalate_threshold   (низкая уверенность по logprobs)
 
 Вывод дня 7: selfcheck.fix локально НЕ применяем — фикс маленькой модели часто хуже исходного.
-Используем `agree=false` только как триггер эскалации.
 
-Структура расширяемая: список `tiers: list[Tier]` — день 10 добавит Tier 0 (micro) в начало.
+Расширяемая структура — день 10 добавит Tier 0 (micro) в начало.
+
+## Ablation flags
+
+- --no-selfcheck         : выкинуть selfcheck из Tier1 (по выводам дня 8)
+- --no-scoring           : выкинуть scoring из Tier1 (только constraint)
+- --scoring-no-grammar   : scoring без GBNF — честные logprobs (день 7 #3)
+- --escalate-threshold X : порог scoring.min_prob для эскалации (default 0.5)
+- --tier1-thinking       : включить thinking на Tier1 (если модель поддерживает)
+- --tier2-thinking       : включить thinking на Tier2 (Qwen3 поддерживает)
+- --tag X                : суффикс имени отчётов; если не задан, автогенерируется
+
+## Имена выходов
+
+results/day8-{tag}-report.md, results/router-{tag}.jsonl, results/router_baseline-{tag}.jsonl
 
 Использование:
-    python scripts/router.py             # прогон 30 примеров (10 valid + 10 edge + 10 long)
-    python scripts/router.py --baseline  # прогон только Tier 2 для сравнения accuracy
+    python scripts/router.py                                 # дефолт
+    python scripts/router.py --no-selfcheck --tier2-thinking # ablation
+    python scripts/router.py --baseline --tag t2only         # только Tier 2
 """
 from __future__ import annotations
 
@@ -45,12 +59,58 @@ VALID = ROOT / "data" / "valid.jsonl"
 META = ROOT / "data" / "split_meta.json"
 EDGE = ROOT / "data" / "eval" / "edge_cases.jsonl"
 LONG = ROOT / "data" / "eval" / "long_cases.jsonl"
-OUT = ROOT / "results" / "router_runs.jsonl"
-REPORT = ROOT / "results" / "day8-report.md"
+RESULTS = ROOT / "results"
 
-# Порог из дня 7: status=UNSURE начинается с min_prob < 0.85, FAIL < 0.5.
-# Эскалируем только если действительно низкая уверенность — UNSURE сам по себе шумит.
-SCORING_ESCALATE_THRESHOLD = 0.5
+
+@dataclass
+class RunConfig:
+    """Конфигурация прогона — определяет сигналы эскалации, thinking, имена файлов."""
+    use_selfcheck: bool = True
+    use_scoring: bool = True
+    scoring_no_grammar: bool = False
+    escalate_threshold: float = 0.5
+    tier1_thinking: bool = False
+    tier2_thinking: bool = True   # Qwen3 по дефолту с thinking off (no_think=True)
+                                  # — флаг разворачивает: True означает «оставить thinking»
+    tag: str = ""
+
+    def auto_tag(self) -> str:
+        if self.tag:
+            return self.tag
+        parts: list[str] = []
+        if not self.use_selfcheck:
+            parts.append("noslfchk")
+        if not self.use_scoring:
+            parts.append("noscoring")
+        if self.scoring_no_grammar:
+            parts.append("nogbnf")
+        if self.escalate_threshold != 0.5:
+            parts.append(f"thr{self.escalate_threshold:.2f}".replace(".", ""))
+        if self.tier1_thinking:
+            parts.append("t1think")
+        if not self.tier2_thinking:
+            parts.append("t2nothink")
+        return "_".join(parts) if parts else "default"
+
+    def out_runs(self) -> Path:
+        return RESULTS / f"router-{self.auto_tag()}.jsonl"
+
+    def out_baseline(self) -> Path:
+        return RESULTS / f"router_baseline-{self.auto_tag()}.jsonl"
+
+    def out_report(self) -> Path:
+        return RESULTS / f"day8-{self.auto_tag()}-report.md"
+
+    def describe(self) -> dict:
+        return {
+            "tag": self.auto_tag(),
+            "use_selfcheck": self.use_selfcheck,
+            "use_scoring": self.use_scoring,
+            "scoring_no_grammar": self.scoring_no_grammar,
+            "escalate_threshold": self.escalate_threshold,
+            "tier1_thinking": self.tier1_thinking,
+            "tier2_thinking": self.tier2_thinking,
+        }
 
 
 @dataclass
@@ -64,40 +124,21 @@ class Tier:
     def __post_init__(self):
         self.client = OpenAI(base_url=self.base_url, api_key="local", timeout=240)
 
-    def predict(self, user_text: str, *, with_signals: bool) -> dict:
+    def predict(
+        self,
+        user_text: str,
+        *,
+        with_signals: bool,
+        cfg: RunConfig | None = None,
+    ) -> dict:
         """Один прогон тира.
 
-        with_signals=True: запускаем 3 проверки дня 7 (constraint + scoring + selfcheck).
-                           Используется для Tier 1 — нам нужны сигналы эскалации.
-        with_signals=False: только constraint (быстрее, меньше токенов).
-                            Используется для Tier 2 — там доверие выше.
+        with_signals=True: запускаем сигналы по cfg (constraint всегда + опционально scoring/selfcheck).
+                           Используется для Tier 1 — нужны сигналы эскалации.
+        with_signals=False: только constraint (быстрее, доверие выше). Tier 2.
         """
-        if with_signals:
-            con = constraint_check(self.client, self.model, user_text, no_think=self.no_think)
-            sc = score_logprobs(
-                self.client, self.model, user_text,
-                use_grammar=True, no_think=self.no_think,
-            )
-            slc = selfcheck(self.client, self.model, user_text, no_think=self.no_think)
-            parsed = (
-                (sc.get("parsed") if isinstance(sc.get("parsed"), dict) else None)
-                or con.get("parsed")
-                or slc.get("final")
-            )
-            tokens_in = con["tokens_in"] + sc["tokens_in"] + slc["tokens_in"]
-            tokens_out = con["tokens_out"] + sc["tokens_out"] + slc["tokens_out"]
-            latency_ms = con["latency_ms"] + sc["latency_ms"] + slc["latency_ms"]
-            return {
-                "tier": self.name,
-                "parsed": parsed,
-                "constraint": con,
-                "scoring": sc,
-                "selfcheck": slc,
-                "latency_ms": round(latency_ms, 1),
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-            }
-        else:
+        cfg = cfg or RunConfig()
+        if not with_signals:
             con = constraint_check(self.client, self.model, user_text, no_think=self.no_think)
             return {
                 "tier": self.name,
@@ -110,12 +151,40 @@ class Tier:
                 "tokens_out": con["tokens_out"],
             }
 
+        con = constraint_check(self.client, self.model, user_text, no_think=self.no_think)
+        sc = None
+        if cfg.use_scoring:
+            sc = score_logprobs(
+                self.client, self.model, user_text,
+                use_grammar=not cfg.scoring_no_grammar,
+                no_think=self.no_think,
+            )
+        slc = None
+        if cfg.use_selfcheck:
+            slc = selfcheck(self.client, self.model, user_text, no_think=self.no_think)
 
-def decide_escalate(tier1_result: dict) -> tuple[bool, str]:
-    """Решение об эскалации только по сигналам дня 7.
+        parsed = (
+            (sc.get("parsed") if sc and isinstance(sc.get("parsed"), dict) else None)
+            or con.get("parsed")
+            or (slc.get("final") if slc else None)
+        )
+        tokens_in = con["tokens_in"] + (sc["tokens_in"] if sc else 0) + (slc["tokens_in"] if slc else 0)
+        tokens_out = con["tokens_out"] + (sc["tokens_out"] if sc else 0) + (slc["tokens_out"] if slc else 0)
+        latency_ms = con["latency_ms"] + (sc["latency_ms"] if sc else 0) + (slc["latency_ms"] if slc else 0)
+        return {
+            "tier": self.name,
+            "parsed": parsed,
+            "constraint": con,
+            "scoring": sc,
+            "selfcheck": slc,
+            "latency_ms": round(latency_ms, 1),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        }
 
-    Приоритет: constraint > scoring > selfcheck.
-    """
+
+def decide_escalate(tier1_result: dict, cfg: RunConfig) -> tuple[bool, str]:
+    """Решение об эскалации по активным сигналам (cfg)."""
     con = tier1_result["constraint"]
     sc = tier1_result["scoring"]
     slc = tier1_result["selfcheck"]
@@ -123,13 +192,13 @@ def decide_escalate(tier1_result: dict) -> tuple[bool, str]:
     if con["status"] == "FAIL":
         return True, "constraint_fail"
 
-    # scoring может вернуть FAIL если parsed не получился — но это маловероятно после constraint=OK
-    if sc and sc["status"] == "FAIL":
-        return True, "scoring_fail"
-    if sc and sc["min_prob"] < SCORING_ESCALATE_THRESHOLD:
-        return True, f"scoring_lowprob({sc['min_prob']:.2f})"
+    if cfg.use_scoring and sc:
+        if sc["status"] == "FAIL":
+            return True, "scoring_fail"
+        if sc["min_prob"] < cfg.escalate_threshold:
+            return True, f"scoring_lowprob({sc['min_prob']:.2f})"
 
-    if slc and slc.get("stage_b") and slc["stage_b"].get("agree") is False:
+    if cfg.use_selfcheck and slc and slc.get("stage_b") and slc["stage_b"].get("agree") is False:
         return True, "selfcheck_disagree"
 
     return False, "tier1_ok"
@@ -170,39 +239,43 @@ def is_correct(parsed: dict | None, expected: dict) -> tuple[bool, bool]:
     return cat, sent
 
 
-def build_tiers() -> tuple[Tier, Tier]:
+def build_tiers(cfg: RunConfig) -> tuple[Tier, Tier]:
+    """thinking-флаги: no_think = NOT thinking (инвертирование)."""
     t1 = Tier(
         name="tier1",
         base_url=os.getenv("TIER1_BASE_URL", "http://127.0.0.1:8080/v1"),
         model=os.getenv("TIER1_MODEL", "qwen2.5-3b"),
-        no_think=False,
+        no_think=not cfg.tier1_thinking,
     )
     t2 = Tier(
         name="tier2",
         base_url=os.getenv("TIER2_BASE_URL", "http://127.0.0.1:8081/v1"),
         model=os.getenv("TIER2_MODEL", "qwen3.6-35b-a3b"),
-        no_think=True,
+        no_think=not cfg.tier2_thinking,
     )
     return t1, t2
 
 
-# ---------- main run modes ----------
+# ---------- run modes ----------
 
-def run_router(items: list[dict], out_path: Path) -> list[dict]:
-    """Каскад: tier1 (с сигналами) → опционально tier2 (только constraint)."""
-    t1, t2 = build_tiers()
+def run_router(items: list[dict], cfg: RunConfig) -> list[dict]:
+    t1, t2 = build_tiers(cfg)
+    out_path = cfg.out_runs()
     out_f = out_path.open("w", encoding="utf-8")
     rows: list[dict] = []
 
-    print(f"Router: {t1.model} @ {t1.base_url} → {t2.model} @ {t2.base_url}")
-    print(f"Eval: {len(items)} (signals: constraint + scoring + selfcheck on tier1)")
-    print(f"Escalate when: constraint=FAIL OR min_prob<{SCORING_ESCALATE_THRESHOLD} OR selfcheck.agree=false\n")
+    print(f"[{cfg.auto_tag()}] Router: {t1.model} (no_think={t1.no_think}) → {t2.model} (no_think={t2.no_think})")
+    print(f"Eval: {len(items)}  signals: con={'+' } scoring={'+' if cfg.use_scoring else '-'} selfcheck={'+' if cfg.use_selfcheck else '-'}")
+    print(f"Escalate: constraint=FAIL"
+          + (f" OR min_prob<{cfg.escalate_threshold}" if cfg.use_scoring else "")
+          + (" OR selfcheck.agree=false" if cfg.use_selfcheck else "")
+          + "\n")
 
     try:
         for i, item in enumerate(items, 1):
             t0 = time.perf_counter()
-            r1 = t1.predict(item["user"], with_signals=True)
-            escalate, reason = decide_escalate(r1)
+            r1 = t1.predict(item["user"], with_signals=True, cfg=cfg)
+            escalate, reason = decide_escalate(r1, cfg)
 
             r2 = None
             if escalate:
@@ -272,13 +345,13 @@ def run_router(items: list[dict], out_path: Path) -> list[dict]:
     return rows
 
 
-def run_baseline_tier2(items: list[dict], out_path: Path) -> list[dict]:
-    """Baseline: всё на Tier 2 (только constraint, без сигналов)."""
-    _, t2 = build_tiers()
+def run_baseline_tier2(items: list[dict], cfg: RunConfig) -> list[dict]:
+    _, t2 = build_tiers(cfg)
+    out_path = cfg.out_baseline()
     out_f = out_path.open("w", encoding="utf-8")
     rows: list[dict] = []
 
-    print(f"Baseline (all-tier2): {t2.model} @ {t2.base_url}\n")
+    print(f"[{cfg.auto_tag()}] Baseline (all-tier2): {t2.model} (no_think={t2.no_think})\n")
     try:
         for i, item in enumerate(items, 1):
             t0 = time.perf_counter()
@@ -352,29 +425,45 @@ def aggregate_router(rows: list[dict]) -> dict:
 def write_report(
     router_rows: list[dict],
     baseline_rows: list[dict] | None,
-    report_path: Path,
+    cfg: RunConfig,
 ):
     r_agg = aggregate_router(router_rows)
     b_agg = aggregate(baseline_rows) if baseline_rows else None
+    report_path = cfg.out_report()
 
     md = [
-        "# День 8 — Routing report\n",
+        f"# День 8 — Routing report ({cfg.auto_tag()})\n",
         f"Total: **{r_agg['n']}** примеров (10 valid + 10 edge + 10 long).\n",
-        "## Сводка router (tier1 → tier2 при сигналах дня 7)\n",
-        "| метрика | router | baseline (all-tier2) |",
-        "|---------|:------:|:--------------------:|",
-        f"| joint accuracy | {r_agg['joint_acc']*100:.1f}% | {b_agg['joint_acc']*100:.1f}% |" if b_agg
-        else f"| joint accuracy | {r_agg['joint_acc']*100:.1f}% | — |",
-        f"| category accuracy | {r_agg['cat_acc']*100:.1f}% | {b_agg['cat_acc']*100:.1f}% |" if b_agg
-        else f"| category accuracy | {r_agg['cat_acc']*100:.1f}% | — |",
-        f"| sentiment accuracy | {r_agg['sent_acc']*100:.1f}% | {b_agg['sent_acc']*100:.1f}% |" if b_agg
-        else f"| sentiment accuracy | {r_agg['sent_acc']*100:.1f}% | — |",
-        f"| avg wall latency | {r_agg['avg_lat_ms']} ms | {b_agg['avg_lat_ms']} ms |" if b_agg
-        else f"| avg wall latency | {r_agg['avg_lat_ms']} ms | — |",
-        f"| p50 / p95 latency | {r_agg['p50_ms']} / {r_agg['p95_ms']} ms | {b_agg['p50_ms']} / {b_agg['p95_ms']} ms |" if b_agg
-        else f"| p50 / p95 latency | {r_agg['p50_ms']} / {r_agg['p95_ms']} ms | — |",
-        f"| total tokens | {r_agg['tokens_total']} | {b_agg['tokens_total']} |" if b_agg
-        else f"| total tokens | {r_agg['tokens_total']} | — |",
+        "## Конфигурация прогона",
+        "```json",
+        json.dumps(cfg.describe(), ensure_ascii=False, indent=2),
+        "```\n",
+        "## Сводка router (tier1 → tier2 при сигналах)\n",
+    ]
+    if b_agg:
+        md += [
+            "| метрика | router | baseline (all-tier2) |",
+            "|---------|:------:|:--------------------:|",
+            f"| joint accuracy | {r_agg['joint_acc']*100:.1f}% | {b_agg['joint_acc']*100:.1f}% |",
+            f"| category accuracy | {r_agg['cat_acc']*100:.1f}% | {b_agg['cat_acc']*100:.1f}% |",
+            f"| sentiment accuracy | {r_agg['sent_acc']*100:.1f}% | {b_agg['sent_acc']*100:.1f}% |",
+            f"| avg wall latency | {r_agg['avg_lat_ms']} ms | {b_agg['avg_lat_ms']} ms |",
+            f"| p50 / p95 latency | {r_agg['p50_ms']} / {r_agg['p95_ms']} ms | {b_agg['p50_ms']} / {b_agg['p95_ms']} ms |",
+            f"| total tokens | {r_agg['tokens_total']} | {b_agg['tokens_total']} |",
+        ]
+    else:
+        md += [
+            "| метрика | router |",
+            "|---------|:------:|",
+            f"| joint accuracy | {r_agg['joint_acc']*100:.1f}% |",
+            f"| category accuracy | {r_agg['cat_acc']*100:.1f}% |",
+            f"| sentiment accuracy | {r_agg['sent_acc']*100:.1f}% |",
+            f"| avg wall latency | {r_agg['avg_lat_ms']} ms |",
+            f"| p50 / p95 latency | {r_agg['p50_ms']} / {r_agg['p95_ms']} ms |",
+            f"| total tokens | {r_agg['tokens_total']} |",
+        ]
+
+    md += [
         "",
         "## Маршрутизация",
         f"- Остался на Tier 1: **{r_agg['tier1_only']}/{r_agg['n']}** ({(1-r_agg['escalation_rate'])*100:.0f}%)",
@@ -387,7 +476,6 @@ def write_report(
     for reason, cnt in sorted(r_agg["escalation_reasons"].items(), key=lambda x: -x[1]):
         md.append(f"| `{reason}` | {cnt} |")
 
-    # per-subset
     md.append("\n## По типам входа\n")
     md.append("| kind | n | joint_acc | tier1_only | escalated | avg_lat ms |")
     md.append("|------|---|-----------|------------|-----------|-----------:|")
@@ -401,7 +489,6 @@ def write_report(
             f"| {a['tier1_only']} | {a['escalated']} | {a['avg_lat_ms']} |"
         )
 
-    # per-row
     md.append("\n## Per-row\n")
     md.append("| id | kind | tier1 signals | escalated | reason | final | correct (cat/sent) |")
     md.append("|----|------|---------------|-----------|--------|-------|--------------------|")
@@ -419,9 +506,9 @@ def write_report(
             f"| {r['final_tier']} | {cm}/{sm} |"
         )
 
-    md.append(f"\nДетали per-row: `results/router_runs.jsonl`.")
+    md.append(f"\nДетали per-row: `{cfg.out_runs().relative_to(ROOT)}`.")
     if baseline_rows is not None:
-        md.append("Baseline per-row: `results/router_baseline.jsonl`.")
+        md.append(f"Baseline per-row: `{cfg.out_baseline().relative_to(ROOT)}`.")
 
     report_path.write_text("\n".join(md), encoding="utf-8")
     print(f"\nReport: {report_path}")
@@ -433,10 +520,36 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("-n", "--num-correct", type=int, default=10)
     parser.add_argument("--baseline", action="store_true",
-                        help="Прогнать только Tier 2 baseline (для сравнения accuracy)")
+                        help="Прогнать только Tier 2 baseline")
     parser.add_argument("--with-baseline", action="store_true",
                         help="Прогнать router + baseline в одной сессии")
+
+    # ablation flags
+    parser.add_argument("--no-selfcheck", action="store_true",
+                        help="Выкинуть selfcheck из Tier1 (по выводам дня 8)")
+    parser.add_argument("--no-scoring", action="store_true",
+                        help="Выкинуть scoring из Tier1 (только constraint)")
+    parser.add_argument("--scoring-no-grammar", action="store_true",
+                        help="Scoring без GBNF — честные logprobs")
+    parser.add_argument("--escalate-threshold", type=float, default=0.5,
+                        help="Порог scoring.min_prob для эскалации (default 0.5)")
+    parser.add_argument("--tier1-thinking", action="store_true",
+                        help="Включить thinking на Tier1")
+    parser.add_argument("--no-tier2-thinking", action="store_true",
+                        help="Выключить thinking на Tier2 (по дефолту он включён)")
+    parser.add_argument("--tag", type=str, default="",
+                        help="Суффикс отчёта; если пусто — автогенерация по флагам")
     args = parser.parse_args()
+
+    cfg = RunConfig(
+        use_selfcheck=not args.no_selfcheck,
+        use_scoring=not args.no_scoring,
+        scoring_no_grammar=args.scoring_no_grammar,
+        escalate_threshold=args.escalate_threshold,
+        tier1_thinking=args.tier1_thinking,
+        tier2_thinking=not args.no_tier2_thinking,
+        tag=args.tag,
+    )
 
     if not VALID.exists() or not META.exists():
         print("Нет valid.jsonl/split_meta.json — запусти build_dataset.py", file=sys.stderr)
@@ -446,24 +559,22 @@ def main() -> int:
         return 1
 
     items = build_eval_set(args.num_correct)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
+    RESULTS.mkdir(parents=True, exist_ok=True)
 
     if args.baseline:
-        baseline_path = ROOT / "results" / "router_baseline.jsonl"
-        rows = run_baseline_tier2(items, baseline_path)
+        rows = run_baseline_tier2(items, cfg)
         agg = aggregate(rows)
         print(f"\nBaseline acc={agg['joint_acc']*100:.1f}%  avg_lat={agg['avg_lat_ms']}ms  tokens={agg['tokens_total']}")
         return 0
 
-    router_rows = run_router(items, OUT)
+    router_rows = run_router(items, cfg)
     baseline_rows = None
     if args.with_baseline:
-        baseline_path = ROOT / "results" / "router_baseline.jsonl"
-        baseline_rows = run_baseline_tier2(items, baseline_path)
+        baseline_rows = run_baseline_tier2(items, cfg)
 
-    write_report(router_rows, baseline_rows, REPORT)
+    write_report(router_rows, baseline_rows, cfg)
     agg = aggregate_router(router_rows)
-    print(f"\nRouter acc={agg['joint_acc']*100:.1f}%  tier1_only={agg['tier1_only']}/{agg['n']}  "
+    print(f"\n[{cfg.auto_tag()}] acc={agg['joint_acc']*100:.1f}%  tier1_only={agg['tier1_only']}/{agg['n']}  "
           f"avg_lat={agg['avg_lat_ms']}ms  tokens={agg['tokens_total']}")
     return 0
 
