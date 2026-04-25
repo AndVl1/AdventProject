@@ -123,17 +123,32 @@ def load_existing_synth() -> Counter:
 
 
 def call_teacher(client: OpenAI, model: str, prompt: str) -> str:
+    """Запрос к teacher. Для Qwen3-серии отключаем thinking — иначе всё уходит
+    в <think>-блок и content приходит пустой."""
     resp = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": "Ты помощник который генерирует реалистичные тикеты для датасета."},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": "Ты помощник который генерирует реалистичные тикеты для датасета. Отвечай кратко и сразу по сути, без рассуждений."},
+            {"role": "user", "content": prompt + "\n\n/no_think"},
         ],
         temperature=0.85,
         top_p=0.95,
-        max_tokens=300,
+        max_tokens=800,
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
     )
-    return resp.choices[0].message.content.strip()
+    msg = resp.choices[0].message
+    content = (msg.content or "").strip()
+    # fallback: если content пустой, но есть reasoning_content — берём его
+    if not content:
+        reasoning = getattr(msg, "reasoning_content", None) or ""
+        content = reasoning.strip()
+    # вырезаем оставшийся <think>...</think> блок если просочился
+    if "<think>" in content and "</think>" in content:
+        end = content.rfind("</think>") + len("</think>")
+        content = content[end:].strip()
+    return content
 
 
 def clean(text: str) -> str:
