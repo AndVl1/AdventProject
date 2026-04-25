@@ -1,0 +1,366 @@
+{
+  "train": [
+    {
+      "id": "ktorio/ktor#5518",
+      "category": "feature_request",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/feature_request/neg/01",
+      "category": "feature_request",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/billing/pos/02",
+      "category": "billing",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/billing/neg/03",
+      "category": "billing",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/other/pos/01",
+      "category": "other",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/bug/neg/02",
+      "category": "bug",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/feature_request/neg/04",
+      "category": "feature_request",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/other/neu/03",
+      "category": "other",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/feature_request/neg/00",
+      "category": "feature_request",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/feature_request/pos/00",
+      "category": "feature_request",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/other/neg/02",
+      "category": "other",
+      "sentiment": "neg"
+    },
+    {
+      "id": "Kotlin/kotlinx.serialization#3181",
+      "category": "bug",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/billing/neg/04",
+      "category": "billing",
+      "sentiment": "neg"
+    },
+    {
+      "id": "Kotlin/kotlinx.coroutines#4629",
+      "category": "bug",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/billing/neu/02",
+      "category": "billing",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/other/neg/00",
+      "category": "other",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/how_to/pos/00",
+      "category": "how_to",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/billing/neu/04",
+      "category": "billing",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/billing/neg/02",
+      "category": "billing",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/bug/neg/01",
+      "category": "bug",
+      "sentiment": "neg"
+    },
+    {
+      "id": "Kotlin/kotlinx.coroutines#4643",
+      "category": "feature_request",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/feature_request/pos/02",
+      "category": "feature_request",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/feature_request/pos/01",
+      "category": "feature_request",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/bug/neg/00",
+      "category": "bug",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/how_to/neu/03",
+      "category": "how_to",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/billing/neu/01",
+      "category": "billing",
+      "sentiment": "neu"
+    },
+    {
+      "id": "Kotlin/kotlinx.coroutines#4630",
+      "category": "feature_request",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/feature_request/pos/04",
+      "category": "feature_request",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/how_to/neg/03",
+      "category": "how_to",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/how_to/neu/01",
+      "category": "how_to",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/billing/neu/00",
+      "category": "billing",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/bug/pos/04",
+      "category": "bug",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/bug/pos/03",
+      "category": "bug",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/other/neu/02",
+      "category": "other",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/other/pos/03",
+      "category": "other",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/other/neu/04",
+      "category": "other",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/how_to/neg/00",
+      "category": "how_to",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/bug/neg/04",
+      "category": "bug",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/how_to/pos/01",
+      "category": "how_to",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/other/neg/01",
+      "category": "other",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/other/neu/00",
+      "category": "other",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/how_to/neu/02",
+      "category": "how_to",
+      "sentiment": "neu"
+    },
+    {
+      "id": "Kotlin/kotlinx.serialization#3182",
+      "category": "feature_request",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/how_to/neu/04",
+      "category": "how_to",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/how_to/neu/00",
+      "category": "how_to",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/how_to/neg/01",
+      "category": "how_to",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/other/pos/00",
+      "category": "other",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/how_to/pos/02",
+      "category": "how_to",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/bug/pos/02",
+      "category": "bug",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/billing/neu/03",
+      "category": "billing",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/other/neg/03",
+      "category": "other",
+      "sentiment": "neg"
+    },
+    {
+      "id": "Kotlin/kotlinx.serialization#3185",
+      "category": "feature_request",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/billing/pos/03",
+      "category": "billing",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/other/pos/02",
+      "category": "other",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/how_to/neg/04",
+      "category": "how_to",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/billing/neg/00",
+      "category": "billing",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/bug/pos/01",
+      "category": "bug",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/billing/neg/01",
+      "category": "billing",
+      "sentiment": "neg"
+    }
+  ],
+  "valid": [
+    {
+      "id": "synth/bug/pos/00",
+      "category": "bug",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/other/neu/01",
+      "category": "other",
+      "sentiment": "neu"
+    },
+    {
+      "id": "synth/billing/pos/04",
+      "category": "billing",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/how_to/pos/03",
+      "category": "how_to",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/bug/neg/03",
+      "category": "bug",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/other/neg/04",
+      "category": "other",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/billing/pos/01",
+      "category": "billing",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/other/pos/04",
+      "category": "other",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/how_to/neg/02",
+      "category": "how_to",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/feature_request/neg/03",
+      "category": "feature_request",
+      "sentiment": "neg"
+    },
+    {
+      "id": "synth/feature_request/pos/03",
+      "category": "feature_request",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/billing/pos/00",
+      "category": "billing",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/how_to/pos/04",
+      "category": "how_to",
+      "sentiment": "pos"
+    },
+    {
+      "id": "synth/feature_request/neg/02",
+      "category": "feature_request",
+      "sentiment": "neg"
+    }
+  ]
+}
