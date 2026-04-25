@@ -70,8 +70,8 @@ class RunConfig:
     scoring_no_grammar: bool = False
     escalate_threshold: float = 0.5
     tier1_thinking: bool = False
-    tier2_thinking: bool = True   # Qwen3 по дефолту с thinking off (no_think=True)
-                                  # — флаг разворачивает: True означает «оставить thinking»
+    tier2_thinking: bool = False  # исторический дефолт дня 7-8: no_think=True на Tier2.
+                                  # Включается флагом --tier2-thinking (Qwen3 поддерживает reasoning).
     tag: str = ""
 
     def auto_tag(self) -> str:
@@ -88,8 +88,8 @@ class RunConfig:
             parts.append(f"thr{self.escalate_threshold:.2f}".replace(".", ""))
         if self.tier1_thinking:
             parts.append("t1think")
-        if not self.tier2_thinking:
-            parts.append("t2nothink")
+        if self.tier2_thinking:
+            parts.append("t2think")
         return "_".join(parts) if parts else "default"
 
     def out_runs(self) -> Path:
@@ -535,8 +535,8 @@ def main() -> int:
                         help="Порог scoring.min_prob для эскалации (default 0.5)")
     parser.add_argument("--tier1-thinking", action="store_true",
                         help="Включить thinking на Tier1")
-    parser.add_argument("--no-tier2-thinking", action="store_true",
-                        help="Выключить thinking на Tier2 (по дефолту он включён)")
+    parser.add_argument("--tier2-thinking", action="store_true",
+                        help="Включить thinking на Tier2 (по дефолту выкл — исторически дни 7-8)")
     parser.add_argument("--tag", type=str, default="",
                         help="Суффикс отчёта; если пусто — автогенерация по флагам")
     args = parser.parse_args()
@@ -547,7 +547,7 @@ def main() -> int:
         scoring_no_grammar=args.scoring_no_grammar,
         escalate_threshold=args.escalate_threshold,
         tier1_thinking=args.tier1_thinking,
-        tier2_thinking=not args.no_tier2_thinking,
+        tier2_thinking=args.tier2_thinking,
         tag=args.tag,
     )
 
