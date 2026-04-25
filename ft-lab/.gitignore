@@ -1,0 +1,28 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+
+# Большие артефакты — хранятся локально, не в репо
+models/*.gguf
+models/*.bin
+models/ft-merged/
+adapters/
+
+# Логи прогонов
+results/*.log
+results/train_metrics.jsonl
+
+# Сырые скрейпы (большие, не нужны в истории)
+data/raw/github_issues.jsonl
+data/synthetic/*.jsonl
+
+.DS_Store
+.idea/
+.vscode/

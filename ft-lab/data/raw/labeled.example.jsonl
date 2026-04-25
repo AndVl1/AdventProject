@@ -1,0 +1,3 @@
+{"id": "owner/repo#42", "text": "После обновления приложение падает на старте. Лог: NullPointerException в MainActivity.onCreate. Откат к версии 1.4 решает проблему.", "label": {"category": "bug", "sentiment": "neg"}}
+{"id": "owner/repo#101", "text": "Хотелось бы добавить поддержку тёмной темы. Светлая режет глаза вечером.", "label": {"category": "feature_request", "sentiment": "neu"}}
+{"id": "owner/repo#7", "text": "Подскажите как правильно настроить retry-policy для Ktor client при работе с нестабильным API?", "label": {"category": "how_to", "sentiment": "neu"}}
