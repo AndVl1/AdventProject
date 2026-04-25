@@ -25,15 +25,36 @@ cd ft-lab
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+```
 
-# запуск teacher (Qwen3-30B-A3B)
-llama-server -m /path/to/Qwen3-30B-A3B-UD-Q3_K_S.gguf \
-  --host 127.0.0.1 --port 8081 --n-gpu-layers 999 --ctx-size 8192
+### Запуск моделей через llama-server -hf (тянет с HF в кэш)
 
-# (после скачивания) запуск base 3B для baseline
-# скачать GGUF Qwen2.5-3B-Instruct Q4_K_M либо сконвертировать сам через convert_hf_to_gguf.py
-llama-server -m /path/to/Qwen2.5-3B-Instruct-Q4_K_M.gguf \
-  --host 127.0.0.1 --port 8080 --n-gpu-layers 999 --ctx-size 4096
+```bash
+# Tier 2 / teacher — Qwen3-30B-A3B MoE (UD-Q3_K_S, ~14 GB)
+llama-server \
+  -hf unsloth/Qwen3-30B-A3B-GGUF:UD-Q3_K_S \
+  --host 127.0.0.1 --port 8081 \
+  --n-gpu-layers 999 --ctx-size 8192 \
+  --jinja
+
+# Tier 1 / FT-base — Qwen2.5-3B-Instruct Q4_K_M (~2 GB)
+llama-server \
+  -hf bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_K_M \
+  --host 127.0.0.1 --port 8080 \
+  --n-gpu-layers 999 --ctx-size 4096 \
+  --jinja
+```
+
+Кэш HF — `~/.cache/llama.cpp/` (или `~/Library/Caches/llama.cpp/` на macOS). Повторный запуск не качает заново.
+
+Флаг `--jinja` нужен для Qwen3 chat-template (иначе формат сломается). Для Qwen2.5 можно опустить — он есть в metadata GGUF.
+
+Альтернативно через `--hf-repo` + `--hf-file` (старый стиль):
+```bash
+llama-server \
+  --hf-repo unsloth/Qwen3-30B-A3B-GGUF \
+  --hf-file Qwen3-30B-A3B-UD-Q3_K_S.gguf \
+  --host 127.0.0.1 --port 8081 --n-gpu-layers 999 --ctx-size 8192 --jinja
 ```
 
 ## Пайплайн дня 6
