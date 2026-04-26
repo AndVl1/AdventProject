@@ -12,6 +12,7 @@ __pycache__/
 # Большие артефакты — хранятся локально, не в репо
 models/*.gguf
 models/*.bin
+models/*.joblib
 models/ft-merged/
 adapters/
 
