@@ -7,6 +7,7 @@ data class ChatRequest(
     val sessionId: UUID? = null,
     val model: String = "openai/gpt-4o-mini",
     val enabledTools: List<String> = emptyList(),
+    val systemPrompt: String? = null,
 )
 
 data class ChatResponse(

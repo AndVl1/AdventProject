@@ -3,6 +3,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ModelsResponse,
+  PromptsResponse,
   ToolsResponse,
 } from './types'
 
@@ -23,6 +24,10 @@ export const api = {
 
   getTools(): Promise<ToolsResponse> {
     return http.get<ToolsResponse>('/tools').then((r) => r.data)
+  },
+
+  getPrompts(): Promise<PromptsResponse> {
+    return http.get<PromptsResponse>('/prompts').then((r) => r.data)
   },
 
   clearSession(sessionId: string): Promise<void> {

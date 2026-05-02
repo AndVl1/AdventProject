@@ -24,6 +24,17 @@ export interface ChatRequest {
   sessionId?: string
   model: string
   enabledTools: string[]
+  systemPrompt?: string
+}
+
+export interface PromptPreset {
+  id: string
+  label: string
+  systemPrompt: string
+}
+
+export interface PromptsResponse {
+  presets: PromptPreset[]
 }
 
 export interface ChatResponse {

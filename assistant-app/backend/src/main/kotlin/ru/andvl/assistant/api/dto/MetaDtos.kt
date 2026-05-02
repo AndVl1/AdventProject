@@ -19,3 +19,13 @@ data class ToolInfo(
 data class ToolsResponse(
     val tools: List<ToolInfo>,
 )
+
+data class PromptPreset(
+    val id: String,
+    val label: String,
+    val systemPrompt: String,
+)
+
+data class PromptsResponse(
+    val presets: List<PromptPreset>,
+)

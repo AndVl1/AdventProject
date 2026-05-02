@@ -10,6 +10,13 @@ const selectedModel = computed({
     store.selectedModel = val
   },
 })
+
+const selectedPromptId = computed({
+  get: () => store.selectedPromptId,
+  set: (val: string) => {
+    store.selectedPromptId = val
+  },
+})
 </script>
 
 <template>
@@ -34,6 +41,22 @@ const selectedModel = computed({
 
     <!-- Бэкенд недоступен — модели не загружены -->
     <span v-else class="header__model-unavailable">Model N/A</span>
+
+    <select
+      v-if="store.availablePrompts.length > 0"
+      v-model="selectedPromptId"
+      class="header__model-select"
+      :disabled="store.sending"
+      aria-label="Системный промпт"
+    >
+      <option
+        v-for="preset in store.availablePrompts"
+        :key="preset.id"
+        :value="preset.id"
+      >
+        {{ preset.label }}
+      </option>
+    </select>
   </header>
 </template>
 

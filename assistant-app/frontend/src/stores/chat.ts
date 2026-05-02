@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
-import type { ChatMessage, Model, Tool } from '@/api/types'
+import type { ChatMessage, Model, PromptPreset, Tool } from '@/api/types'
 
 export const useChatStore = defineStore('chat', () => {
   // --- состояние ---
@@ -11,6 +11,8 @@ export const useChatStore = defineStore('chat', () => {
   const enabledTools = ref<Set<string>>(new Set())
   const availableModels = ref<Model[]>([])
   const availableTools = ref<Tool[]>([])
+  const availablePrompts = ref<PromptPreset[]>([])
+  const selectedPromptId = ref<string>('default')
   const sending = ref(false)
   const error = ref<string | null>(null)
 
@@ -26,13 +28,15 @@ export const useChatStore = defineStore('chat', () => {
   async function loadMeta(): Promise<void> {
     error.value = null
     try {
-      const [modelsRes, toolsRes] = await Promise.all([
+      const [modelsRes, toolsRes, promptsRes] = await Promise.all([
         api.getModels(),
         api.getTools(),
+        api.getPrompts(),
       ])
 
       availableModels.value = modelsRes.models
       availableTools.value = toolsRes.tools
+      availablePrompts.value = promptsRes.presets
 
       // Выбираем первую модель по умолчанию
       if (modelsRes.models.length > 0 && !selectedModel.value) {
@@ -58,11 +62,13 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.push({ role: 'user', text: text.trim() })
 
     try {
+      const preset = availablePrompts.value.find((p) => p.id === selectedPromptId.value)
       const res = await api.sendMessage({
         message: text.trim(),
         sessionId: sessionId.value ?? undefined,
         model: selectedModel.value,
         enabledTools: Array.from(enabledTools.value),
+        systemPrompt: preset?.systemPrompt,
       })
 
       sessionId.value = res.sessionId
@@ -117,6 +123,8 @@ export const useChatStore = defineStore('chat', () => {
     enabledTools,
     availableModels,
     availableTools,
+    availablePrompts,
+    selectedPromptId,
     sending,
     error,
     hasMessages,

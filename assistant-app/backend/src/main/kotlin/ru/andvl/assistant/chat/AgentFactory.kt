@@ -9,9 +9,11 @@ import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import org.springframework.stereotype.Component
+import ru.andvl.assistant.tools.DocReadTool
 import ru.andvl.assistant.tools.GmailReadMessageTool
 import ru.andvl.assistant.tools.GmailReadTool
 import ru.andvl.assistant.tools.GmailSendTool
+import ru.andvl.assistant.tools.WebFetchSanitizedTool
 import ru.andvl.assistant.tools.WebFetchTool
 
 @Component
@@ -21,6 +23,8 @@ class AgentFactory(
     private val gmailReadMessageTool: GmailReadMessageTool,
     private val gmailSendTool: GmailSendTool,
     private val webFetchTool: WebFetchTool,
+    private val webFetchSanitizedTool: WebFetchSanitizedTool,
+    private val docReadTool: DocReadTool,
 ) {
 
     /**
@@ -96,6 +100,8 @@ class AgentFactory(
             "gmail_read_message" to gmailReadMessageTool,
             "gmail_send" to gmailSendTool,
             "web_fetch" to webFetchTool,
+            "web_fetch_sanitized" to webFetchSanitizedTool,
+            "doc_read" to docReadTool,
         )
         return if (enabledToolIds.isEmpty()) {
             all.values.toList()

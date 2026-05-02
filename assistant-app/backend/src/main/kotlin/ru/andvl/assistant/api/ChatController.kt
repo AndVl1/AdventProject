@@ -26,7 +26,7 @@ class ChatController(
         val history = sessionStore.getOrCreate(sessionId)
 
         // Формируем системный промпт с историей диалога
-        val systemPrompt = buildSystemPrompt(history)
+        val systemPrompt = buildSystemPrompt(history, request.systemPrompt)
 
         val tracer = ToolCallTracer()
 
@@ -51,8 +51,9 @@ class ChatController(
         )
     }
 
-    private fun buildSystemPrompt(history: List<SessionMessage>): String {
-        val base = "You are a helpful assistant. Use provided tools when relevant."
+    private fun buildSystemPrompt(history: List<SessionMessage>, override: String?): String {
+        val base = override?.takeIf { it.isNotBlank() }
+            ?: "You are a helpful assistant. Use provided tools when relevant."
         if (history.isEmpty()) return base
 
         val historyText = history.takeLast(20).joinToString("\n") { msg ->
