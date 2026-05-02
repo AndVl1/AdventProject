@@ -21,3 +21,7 @@ node_modules/
 *.log
 web-app/backend/backend.log
 frontend.log
+
+# stray jvm classpath artifacts in repo root
+/META-INF/
+/ai/

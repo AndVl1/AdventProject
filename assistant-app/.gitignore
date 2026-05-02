@@ -1,0 +1,10 @@
+.env
+backend/target/
+backend/.idea/
+backend/*.iml
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.idea/
+*.log
+.pids/

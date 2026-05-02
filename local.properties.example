@@ -1,0 +1,9 @@
+## Пример local.properties — скопируйте содержимое в local.properties и заполните значения.
+## Файл local.properties НЕ коммитится (он в .gitignore).
+
+# Android SDK (заполняется автоматически Android Studio)
+sdk.dir=
+
+# OpenRouter API key для chat-стенда (день 11).
+# Получить бесплатный ключ: https://openrouter.ai/keys
+openrouter.api.key=
