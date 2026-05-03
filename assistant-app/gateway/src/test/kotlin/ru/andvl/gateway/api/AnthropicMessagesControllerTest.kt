@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -596,6 +597,131 @@ class AnthropicMessagesControllerTest {
         // Reverse on map2 must NOT reveal victim's email
         val reversed = map2.reverse("REDACTED_EMAIL_1")
         assertEquals("REDACTED_EMAIL_1", reversed, "map2 reverse must NOT reveal map1 secrets")
+    }
+
+    // --- redaction notice injection: append-at-end behavior ---
+
+    private fun buildMessagesBodyWithSystem(
+        userText: String,
+        systemBlocks: List<Pair<String, Boolean>>, // (text, hasCacheControl)
+    ): JsonNode {
+        val root = mapper.createObjectNode()
+        root.put("model", "claude-sonnet-4-6")
+        root.put("stream", false)
+        val systemArr = mapper.createArrayNode()
+        for ((text, cc) in systemBlocks) {
+            val block = mapper.createObjectNode()
+            block.put("type", "text")
+            block.put("text", text)
+            if (cc) {
+                val cache = mapper.createObjectNode()
+                cache.put("type", "ephemeral")
+                block.set<ObjectNode>("cache_control", cache)
+            }
+            systemArr.add(block)
+        }
+        root.set<ArrayNode>("system", systemArr)
+        val messages = mapper.createArrayNode()
+        val msg = mapper.createObjectNode()
+        msg.put("role", "user")
+        msg.put("content", userText)
+        messages.add(msg)
+        root.set<ArrayNode>("messages", messages)
+        return root
+    }
+
+    @Test
+    @DisplayName("redaction notice is APPENDED at end of system[]; existing blocks (with cache_control) untouched")
+    fun redactionNoticeAppendedAtEnd() {
+        val body = buildMessagesBodyWithSystem(
+            userText = "My email is leak@example.com please process",
+            systemBlocks = listOf(
+                "You are a helpful assistant." to false,
+                "Long stable instructions block (cached)..." to true, // cache breakpoint here
+            ),
+        )
+
+        fakeUpstream.nonStreamResponse = { _ ->
+            val resp = mapper.createObjectNode()
+            val content = mapper.createArrayNode()
+            val tb = mapper.createObjectNode()
+            tb.put("type", "text"); tb.put("text", "ok")
+            content.add(tb)
+            resp.set<ArrayNode>("content", content)
+            resp.put("model", "claude-sonnet-4-6")
+            val u = mapper.createObjectNode()
+            u.put("input_tokens", 10); u.put("output_tokens", 5)
+            resp.set<ObjectNode>("usage", u)
+            UpstreamResult.Ok(resp)
+        }
+
+        val response = controller.messages(
+            mapper.writeValueAsBytes(body), "sk-ant-test-append", null, null, null, null,
+            mockRequest(), mockResponse(),
+        )
+        assertEquals(HttpStatus.OK.value(), response.statusCode.value())
+
+        val upstream = fakeUpstream.lastReceivedBody
+        assertNotNull(upstream)
+        val sys = upstream!!["system"] as? ArrayNode
+        assertNotNull(sys, "system must remain an array")
+        assertEquals(3, sys!!.size(), "must have 2 original blocks + 1 appended notice")
+
+        // First two blocks preserved byte-identically (incl. cache_control on #2).
+        assertEquals("You are a helpful assistant.", sys[0]["text"].asText())
+        assertFalse(sys[0].has("cache_control"), "first block must NOT gain cache_control")
+        assertEquals("Long stable instructions block (cached)...", sys[1]["text"].asText())
+        assertNotNull(sys[1]["cache_control"], "second block must keep its cache_control")
+        assertEquals("ephemeral", sys[1]["cache_control"]["type"].asText())
+
+        // Notice is the LAST block (appended), without its own cache_control.
+        val notice = sys[2]
+        assertEquals("text", notice["type"].asText())
+        assertTrue(
+            notice["text"].asText().contains("[GATEWAY NOTICE]"),
+            "last block must be the gateway redaction notice, got: ${notice["text"].asText()}",
+        )
+        assertFalse(notice.has("cache_control"), "notice block must NOT carry cache_control")
+    }
+
+    @Test
+    @DisplayName("no PII → no notice injected, system[] preserved as-is")
+    fun noPiiNoNoticeInjection() {
+        val body = buildMessagesBodyWithSystem(
+            userText = "What is 2+2?",
+            systemBlocks = listOf("You are a helpful assistant." to true),
+        )
+
+        fakeUpstream.nonStreamResponse = { _ ->
+            val resp = mapper.createObjectNode()
+            val content = mapper.createArrayNode()
+            val tb = mapper.createObjectNode()
+            tb.put("type", "text"); tb.put("text", "4")
+            content.add(tb)
+            resp.set<ArrayNode>("content", content)
+            resp.put("model", "claude-sonnet-4-6")
+            val u = mapper.createObjectNode()
+            u.put("input_tokens", 5); u.put("output_tokens", 1)
+            resp.set<ObjectNode>("usage", u)
+            UpstreamResult.Ok(resp)
+        }
+
+        val response = controller.messages(
+            mapper.writeValueAsBytes(body), "sk-ant-test-clean", null, null, null, null,
+            mockRequest(), mockResponse(),
+        )
+        assertEquals(HttpStatus.OK.value(), response.statusCode.value())
+
+        val upstream = fakeUpstream.lastReceivedBody
+        assertNotNull(upstream)
+        val sys = upstream!!["system"] as? ArrayNode
+        assertNotNull(sys)
+        assertEquals(1, sys!!.size(), "no extra block must be appended on clean input")
+        assertEquals("You are a helpful assistant.", sys[0]["text"].asText())
+        assertFalse(
+            mapper.writeValueAsString(sys).contains("[GATEWAY NOTICE]"),
+            "notice text must be absent in upstream system",
+        )
     }
 }
 

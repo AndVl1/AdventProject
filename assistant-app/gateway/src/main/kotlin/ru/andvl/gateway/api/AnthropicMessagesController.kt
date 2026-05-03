@@ -230,12 +230,15 @@ class AnthropicMessagesController(
                 .body(errorBody("input_blocked", blockReason))
         }
 
-        // НЕ инжектим redaction notice в `system`: Anthropic prompt-cache хэширует ПРЕФИКС
-        // до cache_control breakpoint. Любая вставка перед существующим system-блоком ломает
-        // prefix-hash → каждый запрос как cache-miss → весь input (60K+ tok) идёт в ITPM →
-        // load-shed 429 без retry-after. Достаточно in-place маскировки в walkResult: модель
-        // видит REDACTED_<TYPE>_<N> placeholder'ы и без явной инструкции корректно их трактует
-        // (так же делает референсный Python proxy, который не 429ит).
+        // Инжектим redaction notice ТОЛЬКО когда guard реально что-то замаскировал
+        // (`bodyMutated == true`). Notice добавляется в КОНЕЦ `system[]` — после всех
+        // существующих блоков с `cache_control`. Anthropic кэширует префикс UP TO каждого
+        // breakpoint, поэтому append-в-конец не ломает hash префикса (cache hit сохраняется).
+        // Если guard ничего не тронул — не инжектим вообще, чтобы не платить ~150 tok хвоста
+        // на чистых запросах. Подробности в KDoc у injectAnthropicRedactionNote.
+        if (walkResult.bodyMutated) {
+            injectAnthropicRedactionNote(root)
+        }
         val modifiedRoot = walkResult.bodyMutated
 
         // Byte-identity для апстрима: если guard ничего не тронул — шлём оригинальные байты.
@@ -766,6 +769,25 @@ class AnthropicMessagesController(
         return InputWalkResult(allFindings, blockReason, redactedRequestText.toString(), originalSystemPrompt, mutated)
     }
 
+    /**
+     * Append redaction notice to the END of `system[]` (after all existing blocks).
+     *
+     * Why append, not prepend: Anthropic ephemeral prompt-cache hashes the prefix UP TO each
+     * `cache_control` breakpoint. Inserting BEFORE existing breakpoints invalidates the prefix
+     * hash → every request becomes a full cache-miss → ITPM blow → 429 without retry-after.
+     * Appending AFTER the last block keeps the cached prefix intact: the cache still hits on
+     * everything up to the last existing breakpoint; the notice only adds ~150 tokens of
+     * uncached tail per request — acceptable, and only paid when guard actually masked
+     * something.
+     *
+     * The notice itself does NOT carry its own `cache_control`: that would consume a cache
+     * breakpoint slot (max 4) for marginal savings, since the tail is recomputed each request
+     * along with the new user turn anyway.
+     *
+     * For legacy `system: "string"` format (no breakpoints possible), we convert to array
+     * `[{text: original}, {text: notice}]`. This breaks byte-identity for that one request,
+     * but string format implies no prompt-cache anyway, so nothing is lost.
+     */
     private fun injectAnthropicRedactionNote(root: ObjectNode) {
         val noticeBlock = mapper.createObjectNode().apply {
             put("type", "text")
@@ -774,11 +796,10 @@ class AnthropicMessagesController(
 
         val systemNode = root["system"]
         val newSystemArray = mapper.createArrayNode()
-        newSystemArray.add(noticeBlock)
 
         when {
             systemNode == null || systemNode.isNull -> {
-                // nothing to prepend to; just set the notice
+                // no existing system; notice becomes the only block
             }
             systemNode.isTextual -> {
                 val existingBlock = mapper.createObjectNode().apply {
@@ -794,6 +815,7 @@ class AnthropicMessagesController(
             }
         }
 
+        newSystemArray.add(noticeBlock)
         root.set<ArrayNode>("system", newSystemArray)
     }
 
