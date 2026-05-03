@@ -22,6 +22,9 @@ data class AuditLog(
     // day14: endpoint type ("openai" | "anthropic") and routed upstream host
     val endpointType: String? = null,
     val routedUpstream: String? = null,
+    val promptTokens: Int? = null,
+    val completionTokens: Int? = null,
+    val totalTokens: Int? = null,
 )
 
 data class RedactionEvent(

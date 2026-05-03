@@ -228,7 +228,10 @@ onMounted(loadAll)
       <template v-if="stats && stats.byModelAudit && stats.byModelAudit.length > 0">
         <table>
           <thead>
-            <tr><th>Model</th><th>Endpoint</th><th>Count</th><th>Avg latency (ms)</th></tr>
+            <tr>
+              <th>Model</th><th>Endpoint</th><th>Count</th><th>Avg latency (ms)</th>
+              <th>Tokens (in / out / total)</th>
+            </tr>
           </thead>
           <tbody>
             <tr
@@ -242,6 +245,14 @@ onMounted(loadAll)
               </td>
               <td>{{ row.count }}</td>
               <td>{{ row.avgLatencyMs != null ? row.avgLatencyMs.toFixed(0) : '—' }}</td>
+              <td>
+                <span v-if="row.totalTokens != null && row.totalTokens > 0">
+                  {{ (row.promptTokens ?? 0).toLocaleString() }}
+                  / {{ (row.completionTokens ?? 0).toLocaleString() }}
+                  / <b>{{ row.totalTokens.toLocaleString() }}</b>
+                </span>
+                <span v-else>—</span>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -373,7 +384,7 @@ onMounted(loadAll)
           <tr>
             <th>ts</th><th>status</th><th>model</th>
             <th>Endpoint</th><th>Upstream</th>
-            <th>ip</th><th>conv</th><th>lat</th><th>block</th><th></th>
+            <th>ip</th><th>conv</th><th>lat</th><th>tokens</th><th>block</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -389,6 +400,12 @@ onMounted(loadAll)
             <td>{{ a.clientIp }}</td>
             <td><code>{{ a.conversationId?.slice(0, 8) }}</code></td>
             <td>{{ a.latencyMs }}ms</td>
+            <td>
+              <span v-if="a.totalTokens != null && a.totalTokens > 0" :title="`in ${a.promptTokens ?? 0} / out ${a.completionTokens ?? 0}`">
+                {{ a.totalTokens.toLocaleString() }}
+              </span>
+              <span v-else>—</span>
+            </td>
             <td>{{ a.blockReason ?? '' }}</td>
             <td>
               <button

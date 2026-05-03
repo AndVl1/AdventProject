@@ -246,10 +246,13 @@ class ProxyController(
 
         // Cost tracking
         val usage = upstream["usage"]
+        var pt = 0
+        var ct = 0
+        var tt = 0
         if (usage != null && usage.isObject) {
-            val pt = usage["prompt_tokens"]?.asInt() ?: 0
-            val ct = usage["completion_tokens"]?.asInt() ?: 0
-            val tt = usage["total_tokens"]?.asInt() ?: (pt + ct)
+            pt = usage["prompt_tokens"]?.asInt() ?: 0
+            ct = usage["completion_tokens"]?.asInt() ?: 0
+            tt = usage["total_tokens"]?.asInt() ?: (pt + ct)
             val cost = costTable.estimateUsd(model, pt, ct)
             costs.insert(
                 CostRecord(
@@ -284,6 +287,9 @@ class ProxyController(
                 upstreamRequestJson = upstreamRequestJson,
                 upstreamResponseJson = upstreamResponseJson,
                 endpointType = "openai",
+                promptTokens = pt,
+                completionTokens = ct,
+                totalTokens = tt,
             ),
         )
 

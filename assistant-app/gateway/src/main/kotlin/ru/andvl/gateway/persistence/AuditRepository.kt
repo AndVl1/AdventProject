@@ -20,6 +20,9 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
         // day14: новые поля endpoint_type и routed_upstream
         ensureColumn("audit_log", "endpoint_type", "TEXT")
         ensureColumn("audit_log", "routed_upstream", "TEXT")
+        ensureColumn("audit_log", "prompt_tokens", "INTEGER")
+        ensureColumn("audit_log", "completion_tokens", "INTEGER")
+        ensureColumn("audit_log", "total_tokens", "INTEGER")
     }
 
     private fun ensureColumn(table: String, col: String, type: String) {
@@ -46,6 +49,9 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
             upstreamResponseJson = rs.getString("upstream_response_json"),
             endpointType = rs.getString("endpoint_type"),
             routedUpstream = rs.getString("routed_upstream"),
+            promptTokens = rs.getObject("prompt_tokens")?.let { (it as Number).toInt() },
+            completionTokens = rs.getObject("completion_tokens")?.let { (it as Number).toInt() },
+            totalTokens = rs.getObject("total_tokens")?.let { (it as Number).toInt() },
         )
     }
 
@@ -54,12 +60,14 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
         jdbc.update(
             """INSERT INTO audit_log(ts, conversation_id, client_ip, model, request_text,
                 response_text, status, block_reason, input_findings, output_findings, latency_ms,
-                upstream_request_json, upstream_response_json, endpoint_type, routed_upstream)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""".trimIndent(),
+                upstream_request_json, upstream_response_json, endpoint_type, routed_upstream,
+                prompt_tokens, completion_tokens, total_tokens)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""".trimIndent(),
             audit.ts, audit.conversationId, audit.clientIp, audit.model, audit.requestText,
             audit.responseText, audit.status, audit.blockReason, audit.inputFindings, audit.outputFindings,
             audit.latencyMs, audit.upstreamRequestJson, audit.upstreamResponseJson,
             audit.endpointType, audit.routedUpstream,
+            audit.promptTokens, audit.completionTokens, audit.totalTokens,
         )
     }
 
@@ -81,7 +89,12 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
     /** Per-model breakdown: model, endpoint_type, count, avg latency. */
     fun byModelBreakdown(): List<Map<String, Any?>> =
         jdbc.queryForList(
-            """SELECT model, endpoint_type, COUNT(*) AS cnt, AVG(latency_ms) AS avg_latency_ms
+            """SELECT model, endpoint_type,
+                      COUNT(*) AS cnt,
+                      AVG(latency_ms) AS avg_latency_ms,
+                      COALESCE(SUM(total_tokens), 0) AS total_tok,
+                      COALESCE(SUM(prompt_tokens), 0) AS prompt_tok,
+                      COALESCE(SUM(completion_tokens), 0) AS completion_tok
                FROM audit_log
                GROUP BY model, endpoint_type
                ORDER BY cnt DESC""".trimIndent(),
@@ -91,6 +104,9 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
                 "endpointType" to row["endpoint_type"],
                 "count" to (row["cnt"] as Number).toLong(),
                 "avgLatencyMs" to row["avg_latency_ms"]?.let { (it as Number).toLong() },
+                "totalTokens" to (row["total_tok"] as Number).toLong(),
+                "promptTokens" to (row["prompt_tok"] as Number).toLong(),
+                "completionTokens" to (row["completion_tok"] as Number).toLong(),
             )
         }
 

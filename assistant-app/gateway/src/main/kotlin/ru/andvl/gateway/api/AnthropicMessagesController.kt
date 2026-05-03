@@ -305,15 +305,17 @@ class AnthropicMessagesController(
 
                 // Cost tracking
                 val usage = json["usage"]
+                var promptTok = 0
+                var completionTok = 0
                 if (usage != null && usage.isObject) {
-                    val inputTok = usage["input_tokens"]?.asInt() ?: 0
-                    val outputTok = usage["output_tokens"]?.asInt() ?: 0
-                    val totalTok = inputTok + outputTok
-                    val cost = costTable.estimateUsd(model, inputTok, outputTok)
+                    promptTok = usage["input_tokens"]?.asInt() ?: 0
+                    completionTok = usage["output_tokens"]?.asInt() ?: 0
+                    val totalTok = promptTok + completionTok
+                    val cost = costTable.estimateUsd(model, promptTok, completionTok)
                     costs.insert(
                         CostRecord(
                             conversationId = conversationId, model = model,
-                            promptTokens = inputTok, completionTokens = outputTok,
+                            promptTokens = promptTok, completionTokens = completionTok,
                             totalTokens = totalTok, costUsd = cost,
                         ),
                     )
@@ -338,6 +340,9 @@ class AnthropicMessagesController(
                         upstreamRequestJson = upstreamRequestJson,
                         upstreamResponseJson = upstreamResponseJson,
                         endpointType = "anthropic", routedUpstream = routedHost,
+                        promptTokens = promptTok,
+                        completionTokens = completionTok,
+                        totalTokens = promptTok + completionTok,
                     ),
                 )
 
@@ -457,6 +462,9 @@ class AnthropicMessagesController(
                                     upstreamRequestJson = upstreamRequestJson,
                                     upstreamResponseJson = null,
                                     endpointType = "anthropic", routedUpstream = routedHost,
+                                    promptTokens = totalInputTok,
+                                    completionTokens = streamResult.outputTokens,
+                                    totalTokens = totalTok,
                                 ),
                         )
                     }

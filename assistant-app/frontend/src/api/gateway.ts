@@ -32,6 +32,9 @@ export interface GatewayStats {
     endpointType: string | null
     count: number
     avgLatencyMs: number | null
+    totalTokens: number | null
+    promptTokens: number | null
+    completionTokens: number | null
   }>
 }
 
@@ -52,6 +55,9 @@ export interface AuditEntry {
   upstreamResponseJson: string | null
   endpointType: string | null
   routedUpstream: string | null
+  promptTokens: number | null
+  completionTokens: number | null
+  totalTokens: number | null
 }
 
 export interface RouteConfig {
