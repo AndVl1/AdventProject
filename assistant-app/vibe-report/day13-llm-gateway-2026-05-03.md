@@ -171,45 +171,71 @@ X-Gateway-System-Prompt-Leak: false
 
 ---
 
-## Тесты (16 штук, все зелёные)
+## Тесты (18 штук, все зелёные)
 
 `./gradlew`-аналог: `../backend/mvnw -pl . test`. Surefire-имена должны
 оканчиваться на `Test/Tests/TestCase` — иначе класс не подхватится
 (на этом я уже наступил, переименовал `GuardTestCases.kt → GuardTest.kt`).
 
-### `GuardTest` — 13 кейсов с явным разделением CAUGHT / MISSED
+```
+Tests run: 18, Failures: 0, Errors: 0, Skipped: 0
+[GuardTest]                     15 tests
+[RedactionMapConcurrencyTest]    3 tests
+```
 
-| # | Кейс | Категория | Результат |
-|---|------|-----------|-----------|
-| 1 | AWS access key `AKIAIOSFODNN7EXAMPLE` в инпуте | API_KEY | **CAUGHT** |
-| 2 | Кредитка `4111-1111-1111-1111` | PII | **CAUGHT** |
-| 3 | Телефон `+1 415 555 0123` | PII | **CAUGHT** |
-| 4 | Email `john.doe@example.com` | PII | **CAUGHT** |
-| 5 | OpenAI key `sk-proj-…` | API_KEY | **CAUGHT** |
-| 6 | GitHub token `ghp_…` | API_KEY | **CAUGHT** |
-| 7 | Base64-encoded секрет (`c2stcHJvai0…`) | OBFUSCATION | **MISSED** (документировано) |
-| 8 | Секрет, разрезанный по двум сообщениям | MULTI-MESSAGE | **MISSED** (out of scope) |
-| 9 | Чистый промпт без секретов | NO-FP | 0 ложных срабатываний |
-| 10 | Галлюцинированный AWS-ключ в ответе модели | OUTPUT | **CAUGHT** (через rescan) |
-| 11 | Модель эхом вернула фрагмент system prompt | LEAK | **CAUGHT** (25-char окно) |
-| 12 | Round-trip `REDACTED_N → original` в ответе | REVERSE | **CAUGHT** |
-| 13 | Режим `block` отклоняет запрос с секретом | BLOCK | 422 + reason |
+### `GuardTest` — 15 кейсов: что ловится, что НЕ ловится, почему
 
-Случаи **7** и **8** оставлены сознательно как known-limitations: для
-base64 нужен entropy-detector, для split-across-messages — нормализация
-склейкой (выходит за рамки regex-движка).
+Цель таблицы — не "тестов много", а явно зафиксировать **границы детекта**.
+Колонка "Что проверяет" объясняет, какой именно инвариант фиксирует ассерт;
+колонка "Что ловит" — что произойдёт, если инвариант сломается в проде.
+
+#### Input guard — детект секретов в запросе
+
+| # | Тест | Что проверяет | Что ловит при регрессе |
+|---|------|---------------|------------------------|
+| 1 | `awsKey` | `AKIA[A-Z0-9]{16}` находится → finding с `ruleName="aws_access_key"`, в processedText вместо ключа стоит `REDACTED_AWS_KEY_N` | Поломку builtin-правила AWS или RedactionEngine не замены |
+| 2 | `creditCard` | Карта `4111-1111-1111-1111` находится правилом `credit_card`, оригинал не утекает в processedText | Исчезновение PCI-правила |
+| 3 | `phoneE164` | Номер `+1 415 555 0123` ловится правилом `phone*`, processedText содержит `REDACTED_PHONE_` | Регрессию формата E.164 в regex |
+| 4 | `email` | `john.doe+spam@example.com` ловится правилом `email` | Поломку email-regex (особенно `+`-tag в local-part) |
+| 5 | `openaiKey` | `sk-proj-...` ловится правилом `openai_key` | Сужение sk-prefix-семейства |
+| 6 | `ghpToken` | `ghp_...` ловится правилом `github_token` | Поломку GH-токенов |
+| 9 | `cleanPrompt` | "What is the capital of France?" → 0 findings, processedText == исходный | Появление false-positives на обычном тексте |
+| 13 | `blockMode` | InputGuard в режиме `block` на секрет возвращает `allow=false` + непустой `blockReason` | Поломку BLOCK-семантики (молчаливое прохождение секрета вместо отказа) |
+
+#### Input guard — задокументированные пробелы
+
+| # | Тест | Что проверяет | Зачем |
+|---|------|---------------|-------|
+| 7 | `base64EncodedSecret` | base64-обёрнутый OpenAI-key (`c2stcHJvai0...`) **НЕ** триггерит `openai_key` (regex не декодирует) | Фиксируем известное ограничение чтобы не считать это багом; для base64 нужен Shannon-entropy detector |
+| 8 | `splitSecret` | Секрет, разрезанный на два сообщения (`sk-` + `proj-...`), не ловится ни одной половиной | Фиксируем что cross-message stitching out-of-scope для regex-слоя |
+
+#### Output guard — защита ответа модели
+
+| # | Тест | Что проверяет | Что ловит при регрессе |
+|---|------|---------------|------------------------|
+| 10 | `hallucinatedKey` | Модель сама придумала `AKIAEXAMPLEKEY123456` → `hallucinatedCount >= 1`, в finalText НЕТ оригинала, есть `LLM_OUTPUT_GUARD_1`, и **нет** `REDACTED_AWS` (последний — резервируется только для юзерских значений) | Регрессию: галлюцинации вдруг попадают в юзер-овёрленную мапу или возвращаются юзеру сырыми |
+| 11 | `systemPromptLeak` | Если в ответе встречается ≥25-символьное окно из system prompt → флаг `systemPromptLeak=true` | Поломку 25-char скользящего детектора утечки системного промпта |
+| 12 | `reverseMapping` | Юзер прислал `AKIAIOSFODNN7EXAMPLE` → редактится → модель отвечает плейсхолдером → юзер ВИДИТ оригинал обратно (round-trip) и плейсхолдера в финальном тексте уже нет | Поломку user-flow: либо плейсхолдер торчит наружу, либо reverse не срабатывает |
+| 12.5 | `multipleHallucinationsNumbered` | Несколько галлюцинаций в одном ответе (2 AWS-ключа + email) → нумеруются `LLM_OUTPUT_GUARD_1`, `_2`, …; ни один из 3 оригиналов не утекает в finalText | Регрессию: counter не инкрементится → коллизия плейсхолдеров; либо один из originals случайно остаётся |
+| 12.6 | `hallucinationsNotPersisted` | После прохода output-guard'а с галлюцинацией размер `RedactionMap` остаётся прежним | **Безопасность**: галлюцинированные секреты не должны записываться в conversation map (иначе сохранятся в памяти + потенциально в `redaction_event` БД) |
 
 ### `RedactionMapConcurrencyTest` — 3 стресс-теста
 
-| # | Кейс | Результат |
-|---|------|-----------|
-| 1 | 16 потоков × 1000 одинаковых секретов → ровно 1 плейсхолдер | OK |
-| 2 | 16 потоков × 500 уникальных секретов → 500 уникальных плейсхолдеров | OK |
-| 3 | reverse round-trip восстанавливает оригинал | OK |
+Покрывает thread-safety per-conversation мапы под параллельной нагрузкой
+(InputGuard может вызываться из нескольких потоков для одной conversation).
 
-```
-Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
-```
+| # | Тест | Что проверяет | Что ловит при регрессе |
+|---|------|---------------|------------------------|
+| 1 | `same value across threads collapses to one placeholder` | 16 потоков × 1000 редактов одного и того же значения → ровно 1 плейсхолдер в мапе | Гонку в `putIfAbsent` → дубли плейсхолдеров на один секрет, разъезд счётчика |
+| 2 | `distinct values get distinct placeholders` | 16 потоков × 500 уникальных значений → 500 уникальных плейсхолдеров с префиксом `REDACTED_X_` | Утрату уникальности под нагрузкой (race в counter.incrementAndGet или коллизию имён) |
+| 3 | `reverse round-trip restores the original` | `redact(X) → reverse(text c плейсхолдером)` возвращает исходный X | Поломку reverse-семантики; критично т.к. от неё зависит весь user-flow |
+
+### Что специально НЕ покрыто тестами
+
+- **`ProxyController`-интеграция (HTTP+JSON+OpenRouter)** — нет MockMvc/WebTestClient теста на полный pipeline. Покрывалось smoke'ом через реальный gateway (см. секцию "Доказательство работы"). Backlog: WireMock-стенд для upstream + MockMvc на `/v1/chat/completions`.
+- **Tool_calls round-trip** — нет unit-теста на reverse `tool_calls[].function.arguments`. Проверялось smoke'ом с реальным `send_email`-сценарием. Backlog: добавить тест на ProxyController с фейковым LlmClient.
+- **SQLite-миграция `@PostConstruct`** — нет теста на повторный запуск с уже созданными колонками. Поведение проверено вручную (рестарт gateway 4+ раза, ALTER TABLE падает → `runCatching` ловит → `log.info` молчит).
+- **Rate-limiter** — sliding window не тестируется. Проверялось smoke'ом (`for i in 1..70; do curl …; done` → 10 ответов получают 429).
 
 ---
 
