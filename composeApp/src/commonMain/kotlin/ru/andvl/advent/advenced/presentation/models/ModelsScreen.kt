@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +31,7 @@ import ru.andvl.advent.advenced.domain.model.AiModel
 @Composable
 fun ModelsScreen(
     onModelClick: (String) -> Unit = {},
+    onChatClick: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val viewModel: ModelsViewModel = viewModel {
@@ -40,6 +42,7 @@ fun ModelsScreen(
         state = state,
         onRetry = viewModel::load,
         onModelClick = onModelClick,
+        onChatClick = onChatClick,
         modifier = modifier,
     )
 }
@@ -49,31 +52,40 @@ private fun ModelsContent(
     state: ModelsUiState,
     onRetry: () -> Unit,
     onModelClick: (String) -> Unit,
+    onChatClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier = modifier.fillMaxSize()) {
-        when (state) {
-            is ModelsUiState.Loading -> CircularProgressIndicator(
-                modifier = Modifier.align(Alignment.Center)
-            )
-            is ModelsUiState.Error -> Column(
-                modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(
-                    text = "Ошибка: ${state.message}",
-                    color = MaterialTheme.colorScheme.error,
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Button(onClick = onChatClick) { Text("Chat Stand") }
+        }
+        Box(modifier = Modifier.weight(1f)) {
+            when (state) {
+                is ModelsUiState.Loading -> CircularProgressIndicator(
+                    modifier = Modifier.align(Alignment.Center)
                 )
-                Button(onClick = onRetry) { Text("Повторить") }
-            }
-            is ModelsUiState.Success -> LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(state.models, key = { it.id }) { model ->
-                    ModelRow(model, onClick = { onModelClick(model.id) })
+                is ModelsUiState.Error -> Column(
+                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = "Ошибка: ${state.message}",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Button(onClick = onRetry) { Text("Повторить") }
+                }
+                is ModelsUiState.Success -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(state.models, key = { it.id }) { model ->
+                        ModelRow(model, onClick = { onModelClick(model.id) })
+                    }
                 }
             }
         }
