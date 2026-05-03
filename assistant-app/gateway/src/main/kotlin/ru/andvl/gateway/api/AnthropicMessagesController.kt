@@ -73,6 +73,7 @@ class AnthropicMessagesController(
     fun messages(
         @RequestBody body: JsonNode,
         @RequestHeader(value = "x-api-key", required = false) apiKey: String?,
+        @RequestHeader(value = "Authorization", required = false) authorization: String?,
         @RequestHeader(value = "anthropic-version", required = false) version: String?,
         @RequestHeader(value = "anthropic-beta", required = false) beta: String?,
         @RequestHeader(value = "X-Conversation-Id", required = false) conversationIdHeader: String?,
@@ -81,8 +82,16 @@ class AnthropicMessagesController(
         val started = System.currentTimeMillis()
         val ip = clientIp(request)
 
+        // Anthropic native API uses x-api-key. Claude Code OAuth login (and some clients) use
+        // Authorization: Bearer <token>. Accept either, forward the same scheme upstream verbatim.
         val effectiveApiKey = apiKey?.takeIf { it.isNotBlank() }
-        if (effectiveApiKey == null) {
+        val bearerToken = authorization
+            ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+            ?.substring(7)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val authSecret = effectiveApiKey ?: bearerToken
+        if (authSecret == null) {
             audit.insert(
                 AuditLog(
                     conversationId = null, clientIp = ip, model = null,
@@ -94,7 +103,7 @@ class AnthropicMessagesController(
                 ),
             )
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                .body(errorBody("authentication_error", "x-api-key header required"))
+                .body(errorBody("authentication_error", "x-api-key or Authorization: Bearer header required"))
         }
 
         val effectiveVersion = version?.takeIf { it.isNotBlank() } ?: "2023-06-01"
@@ -103,7 +112,7 @@ class AnthropicMessagesController(
         // SEC-001: normalize client-supplied id and bind registry key to api-key hash
         // to prevent cross-conversation secret hijack
         val normalizedClientId = ConversationKey.normalize(conversationIdHeader) ?: UUID.randomUUID().toString()
-        val conversationId = ConversationKey.registryKey(effectiveApiKey, normalizedClientId)
+        val conversationId = ConversationKey.registryKey(authSecret, normalizedClientId)
 
         // Rate limit check
         val rl = rateLimiter.check(ip)
@@ -179,13 +188,13 @@ class AnthropicMessagesController(
 
         return if (!stream) {
             handleNonStream(
-                root, effectiveApiKey, effectiveVersion, effectiveBeta,
+                root, effectiveApiKey, bearerToken, effectiveVersion, effectiveBeta,
                 conversationId, normalizedClientId, ip, model, map, originalSystemPrompt,
                 redactedRequestText, allFindings, started, upstreamRequestJson, routedBaseUrl,
             )
         } else {
             handleStream(
-                root, effectiveApiKey, effectiveVersion, effectiveBeta,
+                root, effectiveApiKey, bearerToken, effectiveVersion, effectiveBeta,
                 conversationId, normalizedClientId, ip, model, map,
                 redactedRequestText, allFindings, started, upstreamRequestJson, routedBaseUrl,
             )
@@ -194,7 +203,8 @@ class AnthropicMessagesController(
 
     private fun handleNonStream(
         root: ObjectNode,
-        apiKey: String,
+        apiKey: String?,
+        bearerToken: String?,
         version: String,
         beta: String?,
         conversationId: String,
@@ -210,7 +220,7 @@ class AnthropicMessagesController(
         routedBaseUrl: String,
     ): ResponseEntity<*> {
         val routedHost = runCatching { URI.create(routedBaseUrl).host }.getOrNull() ?: routedBaseUrl
-        return when (val result = upstream.send(root, apiKey, version, beta, routedBaseUrl)) {
+        return when (val result = upstream.send(root, apiKey, bearerToken, version, beta, routedBaseUrl)) {
             is UpstreamResult.Failure -> {
                 audit.insert(
                     AuditLog(
@@ -344,7 +354,8 @@ class AnthropicMessagesController(
 
     private fun handleStream(
         root: ObjectNode,
-        apiKey: String,
+        apiKey: String?,
+        bearerToken: String?,
         version: String,
         beta: String?,
         conversationId: String,
@@ -359,7 +370,7 @@ class AnthropicMessagesController(
         routedBaseUrl: String,
     ): ResponseEntity<*> {
         val routedHost = runCatching { URI.create(routedBaseUrl).host }.getOrNull() ?: routedBaseUrl
-        return when (val result = upstream.sendStream(root, apiKey, version, beta, routedBaseUrl)) {
+        return when (val result = upstream.sendStream(root, apiKey, bearerToken, version, beta, routedBaseUrl)) {
             is UpstreamStreamResult.Failure -> {
                 audit.insert(
                     AuditLog(

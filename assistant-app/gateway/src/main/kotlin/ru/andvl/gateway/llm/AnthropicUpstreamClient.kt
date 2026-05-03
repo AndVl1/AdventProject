@@ -88,17 +88,26 @@ class AnthropicUpstreamClient(
 
     private fun buildRequest(
         body: JsonNode,
-        apiKey: String,
+        apiKey: String?,
+        bearerToken: String?,
         anthropicVersion: String,
         beta: String?,
         base: String,
     ): HttpRequest {
+        require(!apiKey.isNullOrBlank() || !bearerToken.isNullOrBlank()) {
+            "either apiKey or bearerToken must be provided"
+        }
         val bodyBytes = mapper.writeValueAsBytes(body)
         val builder = HttpRequest.newBuilder()
             .uri(messagesUrl(base))
-            .header("x-api-key", apiKey)
             .header("anthropic-version", anthropicVersion)
             .header("content-type", "application/json")
+        if (!apiKey.isNullOrBlank()) {
+            builder.header("x-api-key", apiKey)
+        }
+        if (!bearerToken.isNullOrBlank()) {
+            builder.header("Authorization", "Bearer $bearerToken")
+        }
         if (!beta.isNullOrBlank()) {
             builder.header("anthropic-beta", beta)
         }
@@ -108,13 +117,14 @@ class AnthropicUpstreamClient(
 
     fun send(
         body: JsonNode,
-        apiKey: String,
+        apiKey: String?,
+        bearerToken: String?,
         anthropicVersion: String,
         beta: String?,
         baseUrl: String = this.baseUrl,
     ): UpstreamResult {
         return try {
-            val request = buildRequest(body, apiKey, anthropicVersion, beta, baseUrl)
+            val request = buildRequest(body, apiKey, bearerToken, anthropicVersion, beta, baseUrl)
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
             val statusCode = response.statusCode()
             val rawBody = response.body()
@@ -134,13 +144,14 @@ class AnthropicUpstreamClient(
 
     fun sendStream(
         body: JsonNode,
-        apiKey: String,
+        apiKey: String?,
+        bearerToken: String?,
         anthropicVersion: String,
         beta: String?,
         baseUrl: String = this.baseUrl,
     ): UpstreamStreamResult {
         return try {
-            val request = buildRequest(body, apiKey, anthropicVersion, beta, baseUrl)
+            val request = buildRequest(body, apiKey, bearerToken, anthropicVersion, beta, baseUrl)
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream())
             val statusCode = response.statusCode()
             if (statusCode in 200..299) {
