@@ -37,10 +37,17 @@ class AnthropicUpstreamClient(
 
     private val log = LoggerFactory.getLogger(AnthropicUpstreamClient::class.java)
 
+    // HTTP/1.1 + явный requestTimeout: на JDK 21 HTTP/2 SelectorManager уходил в spin-loop
+    // (97% CPU per worker) при разрыве клиента в середине SSE — каждый «зависший» стрим
+    // оставлял HttpClient-Worker, не освобождаемый до рестарта. См. JDK-8334077, JDK-8295056.
     private val httpClient: HttpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(60))
-        .version(HttpClient.Version.HTTP_2)
+        .connectTimeout(Duration.ofSeconds(30))
+        .version(HttpClient.Version.HTTP_1_1)
         .build()
+
+    // Hard cap на весь запрос (включая чтение тела стрима).
+    // Anthropic SSE редко идёт >5 минут — больше = почти наверняка зависшее соединение.
+    private val requestTimeout: Duration = Duration.ofMinutes(5)
 
     // SEC-004: Fail-fast SSRF protection. Validate ALL base-urls (default + all routes) on startup
     // to prevent misconfig leading to api-key leakage to arbitrary hosts.
@@ -100,6 +107,7 @@ class AnthropicUpstreamClient(
         val bodyBytes = mapper.writeValueAsBytes(body)
         val builder = HttpRequest.newBuilder()
             .uri(messagesUrl(base))
+            .timeout(requestTimeout)
             .header("anthropic-version", anthropicVersion)
             .header("content-type", "application/json")
         // Anthropic native API uses x-api-key. OAuth tokens (sk-ant-oat*) require Authorization: Bearer.

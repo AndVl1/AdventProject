@@ -68,14 +68,14 @@ class SseGuardStream(
         var currentEventName: String? = null
         var currentDataLine: String? = null
 
+        // ВАЖНО: НЕ глотать IOException. Если клиент разорвал соединение,
+        // надо пробросить наружу — внешний `body.use { }` закроет upstream InputStream
+        // и upstream HTTP-стрим освободится. Иначе мы продолжали бы читать Anthropic
+        // до конца впустую (тратя токены) и держали HTTP-worker занятым.
         fun writeEvent(name: String, jsonRaw: String) {
-            try {
-                downstream.write("event: $name\n".toByteArray(Charsets.UTF_8))
-                downstream.write("data: $jsonRaw\n\n".toByteArray(Charsets.UTF_8))
-                downstream.flush()
-            } catch (e: IOException) {
-                log.warn("write to downstream failed: {}", e.message)
-            }
+            downstream.write("event: $name\n".toByteArray(Charsets.UTF_8))
+            downstream.write("data: $jsonRaw\n\n".toByteArray(Charsets.UTF_8))
+            downstream.flush()
         }
 
         fun guardChunk(prefix: String): String {
@@ -310,7 +310,11 @@ class SseGuardStream(
                 }
             }
         } catch (e: IOException) {
+            // Может быть от upstream.read (Anthropic закрыл / таймаут)
+            // ИЛИ от downstream.write (клиент разорвал TCP).
+            // В обоих случаях finally{} вызовет finalize() → audit запишет частичный результат.
             notes += "io_error: ${e.message}"
+            log.debug("pipe io_error: {}", e.message)
         } catch (e: Exception) {
             // Unexpected fatal error (e.g. JsonProcessingException from parseAndProcessEvent).
             // Record it in notes so audit captures it, then fall through to finalize().
