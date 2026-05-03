@@ -90,6 +90,7 @@ class AnthropicMessagesController(
                     status = "BLOCKED", blockReason = "missing api key",
                     inputFindings = null, outputFindings = null,
                     latencyMs = System.currentTimeMillis() - started,
+                    endpointType = "anthropic",
                 ),
             )
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
@@ -113,6 +114,7 @@ class AnthropicMessagesController(
                     requestText = null, responseText = null,
                     status = "RATE_LIMITED", blockReason = "rate limit ${rateLimiter.limitPerMinute()}/min",
                     inputFindings = null, outputFindings = null, latencyMs = 0,
+                    endpointType = "anthropic",
                 ),
             )
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
@@ -159,6 +161,7 @@ class AnthropicMessagesController(
                     status = "BLOCKED", blockReason = blockReason,
                     inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                     outputFindings = null, latencyMs = System.currentTimeMillis() - started,
+                    endpointType = "anthropic",
                 ),
             )
             return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
@@ -206,6 +209,7 @@ class AnthropicMessagesController(
         upstreamRequestJson: String,
         routedBaseUrl: String,
     ): ResponseEntity<*> {
+        val routedHost = runCatching { URI.create(routedBaseUrl).host }.getOrNull() ?: routedBaseUrl
         return when (val result = upstream.send(root, apiKey, version, beta, routedBaseUrl)) {
             is UpstreamResult.Failure -> {
                 audit.insert(
@@ -216,6 +220,7 @@ class AnthropicMessagesController(
                         inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
                         upstreamRequestJson = upstreamRequestJson, upstreamResponseJson = null,
+                        endpointType = "anthropic", routedUpstream = routedHost,
                     ),
                 )
                 ResponseEntity.status(HttpStatus.BAD_GATEWAY)
@@ -230,6 +235,7 @@ class AnthropicMessagesController(
                         inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
                         upstreamRequestJson = upstreamRequestJson, upstreamResponseJson = null,
+                        endpointType = "anthropic", routedUpstream = routedHost,
                     ),
                 )
                 ResponseEntity.status(result.status)
@@ -319,6 +325,7 @@ class AnthropicMessagesController(
                         latencyMs = System.currentTimeMillis() - started,
                         upstreamRequestJson = upstreamRequestJson,
                         upstreamResponseJson = upstreamResponseJson,
+                        endpointType = "anthropic", routedUpstream = routedHost,
                     ),
                 )
 
@@ -351,6 +358,7 @@ class AnthropicMessagesController(
         upstreamRequestJson: String,
         routedBaseUrl: String,
     ): ResponseEntity<*> {
+        val routedHost = runCatching { URI.create(routedBaseUrl).host }.getOrNull() ?: routedBaseUrl
         return when (val result = upstream.sendStream(root, apiKey, version, beta, routedBaseUrl)) {
             is UpstreamStreamResult.Failure -> {
                 audit.insert(
@@ -361,6 +369,7 @@ class AnthropicMessagesController(
                         inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
                         upstreamRequestJson = upstreamRequestJson, upstreamResponseJson = null,
+                        endpointType = "anthropic", routedUpstream = routedHost,
                     ),
                 )
                 ResponseEntity.status(HttpStatus.BAD_GATEWAY)
@@ -375,6 +384,7 @@ class AnthropicMessagesController(
                         inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
                         upstreamRequestJson = upstreamRequestJson, upstreamResponseJson = null,
+                        endpointType = "anthropic", routedUpstream = routedHost,
                     ),
                 )
                 ResponseEntity.status(result.status)
@@ -423,6 +433,7 @@ class AnthropicMessagesController(
                                     latencyMs = System.currentTimeMillis() - started,
                                     upstreamRequestJson = upstreamRequestJson,
                                     upstreamResponseJson = null,
+                                    endpointType = "anthropic", routedUpstream = routedHost,
                                 ),
                             )
                         }

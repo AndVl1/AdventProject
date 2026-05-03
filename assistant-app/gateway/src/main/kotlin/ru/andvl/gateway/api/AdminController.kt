@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import ru.andvl.gateway.guard.ConversationRegistry
 import ru.andvl.gateway.guard.RedactionEngine
+import ru.andvl.gateway.llm.ModelEndpointRouter
 import ru.andvl.gateway.persistence.AuditLog
 import ru.andvl.gateway.persistence.AuditRepository
 import ru.andvl.gateway.persistence.CostRepository
@@ -30,6 +31,14 @@ data class StatsResponse(
     val redactionsByRule: Map<String, Long>,
     val activeConversations: Int,
     val rateLimitRpm: Int,
+    // day14: per-model audit breakdown (model + endpointType + count + avgLatency)
+    val byModelAudit: List<Map<String, Any?>>,
+)
+
+data class RoutesResponse(
+    val default: String,
+    val routes: List<ModelEndpointRouter.RouteInfo>,
+    val allowedHosts: List<String>,
 )
 
 data class RuleUpsertRequest(
@@ -50,6 +59,9 @@ class AdminController(
     private val registry: ConversationRegistry,
     private val rateLimiter: RateLimiter,
     private val engine: RedactionEngine,
+    private val router: ModelEndpointRouter,
+    @org.springframework.beans.factory.annotation.Value("\${gateway.anthropic.allowed-hosts:api.anthropic.com}")
+    private val allowedHostsRaw: String,
 ) {
 
     @GetMapping("/stats")
@@ -63,6 +75,17 @@ class AdminController(
             redactionsByRule = redactionEvents.countByRule(),
             activeConversations = registry.activeConversations(),
             rateLimitRpm = rateLimiter.limitPerMinute(),
+            byModelAudit = audit.byModelBreakdown(),
+        )
+    }
+
+    @GetMapping("/routes")
+    fun routes(): RoutesResponse {
+        val allowedHosts = allowedHostsRaw.split(",").map { it.trim() }.filter { it.isNotBlank() }
+        return RoutesResponse(
+            default = router.defaultUrl(),
+            routes = router.routeInfoList(),
+            allowedHosts = allowedHosts,
         )
     }
 
@@ -105,7 +128,11 @@ class AdminController(
     }
 
     @GetMapping("/audit")
-    fun audit(@RequestParam(defaultValue = "100") limit: Int): List<AuditLog> = audit.recent(limit)
+    fun audit(
+        @RequestParam(defaultValue = "100") limit: Int,
+        @RequestParam(required = false) endpointType: String?,
+        @RequestParam(required = false) model: String?,
+    ): List<AuditLog> = audit.recent(limit, endpointType, model)
 
     @GetMapping("/redactions")
     fun redactions(@RequestParam(defaultValue = "100") limit: Int): List<RedactionEvent> =

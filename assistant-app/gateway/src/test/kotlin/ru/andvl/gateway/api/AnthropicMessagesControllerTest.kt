@@ -648,7 +648,15 @@ private class FakeAuditRepository : AuditRepository(org.springframework.jdbc.cor
 
     override fun migrate() { /* no-op */ }
 
-    override fun recent(limit: Int): List<AuditLog> = logs.takeLast(limit)
+    override fun recent(limit: Int, endpointType: String?, modelFilter: String?): List<AuditLog> {
+        var result = logs.asSequence()
+        if (endpointType != null) result = result.filter { it.endpointType == endpointType }
+        if (modelFilter != null) {
+            val regex = Regex(modelFilter.replace("*", ".*").replace("?", "."))
+            result = result.filter { it.model?.let { m -> regex.matches(m) } ?: false }
+        }
+        return result.toList().takeLast(limit)
+    }
 
     override fun stats(): Map<String, Long> =
         logs.groupBy { it.status }.mapValues { it.value.size.toLong() }

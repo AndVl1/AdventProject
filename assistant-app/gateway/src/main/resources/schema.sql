@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
     upstream_request_json  TEXT,
     -- snapshot of upstream HTTP response body, with each choice.message.content replaced by
     -- loggableText (rescan'd, плейсхолдеры юзера НЕ развёрнуты — безопасно для хранения)
-    upstream_response_json TEXT
+    upstream_response_json TEXT,
+    -- day14: endpoint type and routed upstream host
+    endpoint_type   TEXT,                 -- "openai" | "anthropic" | null (legacy)
+    routed_upstream TEXT                  -- host name, e.g. "api.anthropic.com" | null
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);

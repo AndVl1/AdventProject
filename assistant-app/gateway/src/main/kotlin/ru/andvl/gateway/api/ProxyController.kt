@@ -73,6 +73,7 @@ class ProxyController(
                     requestText = null, responseText = null,
                     status = "RATE_LIMITED", blockReason = "rate limit ${rateLimiter.limitPerMinute()}/min",
                     inputFindings = null, outputFindings = null, latencyMs = 0,
+                    endpointType = "openai",
                 ),
             )
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
@@ -157,6 +158,7 @@ class ProxyController(
                     status = "BLOCKED", blockReason = blockReason,
                     inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                     outputFindings = null, latencyMs = System.currentTimeMillis() - started,
+                    endpointType = "openai",
                 ),
             )
             return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
@@ -184,6 +186,7 @@ class ProxyController(
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
                         upstreamRequestJson = upstreamRequestJson,
                         upstreamResponseJson = null,
+                        endpointType = "openai",
                     ),
                 )
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
@@ -280,6 +283,7 @@ class ProxyController(
                 latencyMs = System.currentTimeMillis() - started,
                 upstreamRequestJson = upstreamRequestJson,
                 upstreamResponseJson = upstreamResponseJson,
+                endpointType = "openai",
             ),
         )
 

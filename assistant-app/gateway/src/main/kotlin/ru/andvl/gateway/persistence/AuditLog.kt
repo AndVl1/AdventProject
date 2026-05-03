@@ -19,6 +19,9 @@ data class AuditLog(
     val upstreamRequestJson: String? = null,
     // raw JSON ответа upstream, с message.content = loggableText (БЕЗ reverse оригиналов)
     val upstreamResponseJson: String? = null,
+    // day14: endpoint type ("openai" | "anthropic") and routed upstream host
+    val endpointType: String? = null,
+    val routedUpstream: String? = null,
 )
 
 data class RedactionEvent(

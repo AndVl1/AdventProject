@@ -28,6 +28,12 @@ class ModelEndpointRouter(
 
     fun allBaseUrls(): Set<String> = (routes.map { it.baseUrl } + defaultBaseUrl).toSet()
 
+    data class RouteInfo(val pattern: String, val baseUrl: String)
+
+    fun routeInfoList(): List<RouteInfo> = routes.map { RouteInfo(it.pattern, it.baseUrl) }
+
+    fun defaultUrl(): String = defaultBaseUrl
+
     companion object {
         /**
          * Converts a glob pattern to a Regex.
