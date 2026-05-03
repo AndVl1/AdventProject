@@ -1,0 +1,32 @@
+dotenv:
+  directory: ../
+
+server:
+  port: 8091
+
+spring:
+  application:
+    name: llm-gateway
+  datasource:
+    url: jdbc:sqlite:${GATEWAY_DB_PATH:./gateway.db}
+    driver-class-name: org.sqlite.JDBC
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+gateway:
+  upstream:
+    base-url: ${GATEWAY_UPSTREAM_URL:https://openrouter.ai/api/v1}
+    api-key: ${OPENROUTER_API_KEY:}
+  ratelimit:
+    requests-per-minute: ${GATEWAY_RPM:60}
+  redaction:
+    mode: ${GATEWAY_REDACTION_MODE:redact}    # redact | block
+    conversation-ttl-minutes: 60
+  cors:
+    allowed-origins: http://localhost:5173
+
+logging:
+  level:
+    ru.andvl.gateway: INFO

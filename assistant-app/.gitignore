@@ -2,10 +2,16 @@
 backend/target/
 backend/.idea/
 backend/*.iml
+gateway/target/
+gateway/.idea/
+gateway/*.iml
+gateway/gateway.db
+gateway/gateway.db-*
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/.idea/
 frontend/*.tsbuildinfo
+frontend/vite.config.js
 *.log
 .pids/
