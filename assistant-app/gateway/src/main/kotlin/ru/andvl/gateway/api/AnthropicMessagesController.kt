@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
@@ -15,7 +16,6 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody
 import ru.andvl.gateway.cost.CostTable
 import ru.andvl.gateway.guard.ConversationRegistry
 import ru.andvl.gateway.guard.Finding
@@ -78,7 +78,8 @@ class AnthropicMessagesController(
         @RequestHeader(value = "anthropic-beta", required = false) beta: String?,
         @RequestHeader(value = "X-Conversation-Id", required = false) conversationIdHeader: String?,
         request: HttpServletRequest,
-    ): ResponseEntity<*> {
+        response: HttpServletResponse,
+    ): Any? {
         val started = System.currentTimeMillis()
         val ip = clientIp(request)
 
@@ -197,6 +198,7 @@ class AnthropicMessagesController(
                 root, effectiveApiKey, bearerToken, effectiveVersion, effectiveBeta,
                 conversationId, normalizedClientId, ip, model, map,
                 redactedRequestText, allFindings, started, upstreamRequestJson, routedBaseUrl,
+                response,
             )
         }
     }
@@ -368,7 +370,8 @@ class AnthropicMessagesController(
         started: Long,
         upstreamRequestJson: String,
         routedBaseUrl: String,
-    ): ResponseEntity<*> {
+        response: HttpServletResponse,
+    ): Any? {
         val routedHost = runCatching { URI.create(routedBaseUrl).host }.getOrNull() ?: routedBaseUrl
         return when (val result = upstream.sendStream(root, apiKey, bearerToken, version, beta, routedBaseUrl)) {
             is UpstreamStreamResult.Failure -> {
@@ -402,9 +405,18 @@ class AnthropicMessagesController(
                     .body(result.errorJson ?: errorBody("upstream_error", "status=${result.status}"))
             }
             is UpstreamStreamResult.Ok -> {
-                val streamingBody = StreamingResponseBody { output ->
-                    result.body.use { upstreamStream ->
-                        sseGuard.pipe(upstreamStream, output, map) { streamResult ->
+                response.status = HttpStatus.OK.value()
+                response.setHeader(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
+                response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache")
+                response.setHeader("X-Accel-Buffering", "no")
+                response.setHeader("X-Conversation-Id", clientConversationId)
+                response.setHeader("X-Gateway-Input-Redactions", allFindings.size.toString())
+                response.setHeader("X-Gateway-Stream", "true")
+                response.setHeader("X-Gateway-System-Prompt-Leak", "skipped")
+                response.setHeader("X-Gateway-Routed-Upstream", URI.create(routedBaseUrl).host ?: routedBaseUrl)
+                response.flushBuffer()
+                result.body.use { upstreamStream ->
+                    sseGuard.pipe(upstreamStream, response.outputStream, map) { streamResult ->
                             val cacheInputTok = streamResult.cacheCreationInputTokens + streamResult.cacheReadInputTokens
                             val totalInputTok = streamResult.inputTokens + cacheInputTok
                             val totalTok = totalInputTok + streamResult.outputTokens
@@ -446,22 +458,10 @@ class AnthropicMessagesController(
                                     upstreamResponseJson = null,
                                     endpointType = "anthropic", routedUpstream = routedHost,
                                 ),
-                            )
-                        }
+                        )
                     }
                 }
-
-                ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
-                    .header(HttpHeaders.CACHE_CONTROL, "no-cache")
-                    .header("X-Accel-Buffering", "no")
-                    // SEC-001: return only client-facing id (no apiKeyHash exposed)
-                    .header("X-Conversation-Id", clientConversationId)
-                    .header("X-Gateway-Input-Redactions", allFindings.size.toString())
-                    .header("X-Gateway-Stream", "true")
-                    .header("X-Gateway-System-Prompt-Leak", "skipped")
-                    .header("X-Gateway-Routed-Upstream", URI.create(routedBaseUrl).host ?: routedBaseUrl)
-                    .body(streamingBody)
+                null
             }
         }
     }
