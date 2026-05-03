@@ -393,7 +393,7 @@ onMounted(loadAll)
             <td>
               <button
                 class="btn small"
-                :disabled="!a.upstreamRequestJson && !a.upstreamResponseJson"
+                :disabled="!a.upstreamRequestJson && !a.upstreamResponseJson && !a.responseText"
                 @click="inspecting = a"
               >JSON</button>
             </td>
@@ -419,7 +419,12 @@ onMounted(loadAll)
           </div>
           <div class="json-col">
             <h4>← Response от upstream</h4>
-            <pre class="json-pre">{{ prettyJson(inspecting.upstreamResponseJson) }}</pre>
+            <pre v-if="inspecting.upstreamResponseJson" class="json-pre">{{ prettyJson(inspecting.upstreamResponseJson) }}</pre>
+            <div v-else-if="inspecting.responseText">
+              <p class="hint">Stream: показан агрегированный текст (loggableText), полный JSON не сохраняется.</p>
+              <pre class="json-pre">{{ inspecting.responseText }}</pre>
+            </div>
+            <p v-else class="hint">Нет данных.</p>
           </div>
         </div>
       </div>
