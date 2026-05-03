@@ -102,11 +102,14 @@ class AnthropicUpstreamClient(
             .uri(messagesUrl(base))
             .header("anthropic-version", anthropicVersion)
             .header("content-type", "application/json")
-        if (!apiKey.isNullOrBlank()) {
-            builder.header("x-api-key", apiKey)
-        }
-        if (!bearerToken.isNullOrBlank()) {
-            builder.header("Authorization", "Bearer $bearerToken")
+        // Anthropic native API uses x-api-key. OAuth tokens (sk-ant-oat*) require Authorization: Bearer.
+        // To support both schemes regardless of which header the client sent (Claude Code with
+        // ANTHROPIC_AUTH_TOKEN sends Bearer, but the token may be a regular API key), forward the
+        // single secret in BOTH headers — upstream picks the right one.
+        val effective = apiKey?.takeIf { it.isNotBlank() } ?: bearerToken
+        if (!effective.isNullOrBlank()) {
+            builder.header("x-api-key", effective)
+            builder.header("Authorization", "Bearer $effective")
         }
         if (!beta.isNullOrBlank()) {
             builder.header("anthropic-beta", beta)
