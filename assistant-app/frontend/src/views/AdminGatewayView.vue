@@ -29,6 +29,17 @@ const testModel = ref('openai/gpt-4o-mini')
 const testConvId = ref('admin-test-conv')
 const testResult = ref<unknown>(null)
 
+const inspecting = ref<AuditEntry | null>(null)
+
+function prettyJson(s: string | null): string {
+  if (!s) return '(empty)'
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2)
+  } catch {
+    return s
+  }
+}
+
 async function loadAll() {
   loadError.value = null
   try {
@@ -187,7 +198,7 @@ onMounted(loadAll)
     <section class="card">
       <h2>Recent audit ({{ audit.length }})</h2>
       <table>
-        <thead><tr><th>ts</th><th>status</th><th>model</th><th>ip</th><th>conv</th><th>lat</th><th>block</th></tr></thead>
+        <thead><tr><th>ts</th><th>status</th><th>model</th><th>ip</th><th>conv</th><th>lat</th><th>block</th><th></th></tr></thead>
         <tbody>
           <tr v-for="a in audit" :key="a.id">
             <td>{{ fmtTs(a.ts) }}</td>
@@ -196,10 +207,40 @@ onMounted(loadAll)
             <td><code>{{ a.conversationId?.slice(0, 8) }}</code></td>
             <td>{{ a.latencyMs }}ms</td>
             <td>{{ a.blockReason ?? '' }}</td>
+            <td>
+              <button
+                class="btn small"
+                :disabled="!a.upstreamRequestJson && !a.upstreamResponseJson"
+                @click="inspecting = a"
+              >JSON</button>
+            </td>
           </tr>
         </tbody>
       </table>
     </section>
+
+    <div v-if="inspecting" class="modal" @click.self="inspecting = null">
+      <div class="modal-body card json-modal">
+        <div class="bar">
+          <h3>Upstream JSON snapshot — conv <code>{{ inspecting.conversationId?.slice(0, 8) }}</code></h3>
+          <button class="btn" @click="inspecting = null">Close</button>
+        </div>
+        <p class="hint">
+          Тут видно, что РЕАЛЬНО улетело в LLM (после InputGuard + system-note про REDACTED)
+          и что вернулось (с loggable-content, юзерские плейсхолдеры НЕ развёрнуты).
+        </p>
+        <div class="json-cols">
+          <div class="json-col">
+            <h4>→ Request к upstream</h4>
+            <pre class="json-pre">{{ prettyJson(inspecting.upstreamRequestJson) }}</pre>
+          </div>
+          <div class="json-col">
+            <h4>← Response от upstream</h4>
+            <pre class="json-pre">{{ prettyJson(inspecting.upstreamResponseJson) }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -233,5 +274,14 @@ code { background: var(--color-surface-alt); padding: 1px 4px; border-radius: 2p
 .st-ok { color: green; } .st-blocked { color: var(--color-error); } .st-rate_limited { color: var(--color-warn); } .st-error { color: var(--color-error); }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .modal-body { width: 480px; display: flex; flex-direction: column; gap: 8px; }
+.json-modal { width: 90vw; max-width: 1400px; max-height: 90vh; }
+.json-modal .bar { padding-bottom: 8px; border-bottom: 1px solid var(--color-border); }
+.json-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; overflow: auto; }
+.json-col h4 { margin-bottom: 6px; font-size: 13px; }
+.json-pre {
+  background: var(--color-surface-alt); padding: 8px; border-radius: 4px;
+  font-size: 11px; max-height: 70vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+.hint { font-size: 12px; color: var(--color-text-muted, #888); margin-bottom: 4px; }
 label { display: block; font-size: 13px; margin: 4px 0; }
 </style>

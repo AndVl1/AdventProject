@@ -3,7 +3,8 @@ package ru.andvl.gateway.guard
 import org.springframework.stereotype.Service
 
 data class OutputResult(
-    val finalText: String,
+    val finalText: String,                    // что отдаём клиенту (плейсхолдеры развернуты в оригиналы)
+    val loggableText: String,                 // безопасно для БД: галлюцинации замаскированы, плейсхолдеры юзера НЕ развернуты
     val rescanFindings: List<Finding>,        // model-hallucinated secrets that we masked
     val systemPromptLeak: Boolean,
     val suspiciousUrls: List<String>,
@@ -66,6 +67,7 @@ class OutputGuard(private val engine: RedactionEngine) {
 
         return OutputResult(
             finalText = masked,
+            loggableText = rescan.text,   // до reverse: безопасно для записи в audit
             rescanFindings = rescan.findings,
             systemPromptLeak = leak,
             suspiciousUrls = suspicious,

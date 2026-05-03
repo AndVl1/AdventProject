@@ -22,7 +22,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     block_reason    TEXT,
     input_findings  TEXT,                 -- JSON array of {rule, count}
     output_findings TEXT,
-    latency_ms      INTEGER
+    latency_ms      INTEGER,
+    -- snapshot of upstream HTTP request body (post-InputGuard, post-system-note injection)
+    upstream_request_json  TEXT,
+    -- snapshot of upstream HTTP response body, with each choice.message.content replaced by
+    -- loggableText (rescan'd, плейсхолдеры юзера НЕ развёрнуты — безопасно для хранения)
+    upstream_response_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);

@@ -36,13 +36,14 @@ export interface AuditEntry {
   clientIp: string | null
   model: string | null
   requestText: string | null
-  redactedText: string | null
   responseText: string | null
   status: string
   blockReason: string | null
   inputFindings: string | null
   outputFindings: string | null
   latencyMs: number | null
+  upstreamRequestJson: string | null
+  upstreamResponseJson: string | null
 }
 
 export interface RedactionEntry {

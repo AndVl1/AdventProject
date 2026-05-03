@@ -6,14 +6,19 @@ data class AuditLog(
     val conversationId: String?,
     val clientIp: String?,
     val model: String?,
+    // Безопасно для логирования: уже после InputGuard, секреты заменены на REDACTED_N плейсхолдеры.
+    // Колонка redacted_text в schema.sql осталась как deprecated и больше не пишется.
     val requestText: String?,
-    val redactedText: String?,
     val responseText: String?,
     val status: String,                 // OK | BLOCKED | ERROR | RATE_LIMITED
     val blockReason: String? = null,
     val inputFindings: String? = null,
     val outputFindings: String? = null,
     val latencyMs: Long? = null,
+    // raw JSON, что улетает в upstream (post-guard, c инжектом system-note про REDACTED)
+    val upstreamRequestJson: String? = null,
+    // raw JSON ответа upstream, с message.content = loggableText (БЕЗ reverse оригиналов)
+    val upstreamResponseJson: String? = null,
 )
 
 data class RedactionEvent(

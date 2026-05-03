@@ -1,11 +1,29 @@
 package ru.andvl.gateway.persistence
 
+import jakarta.annotation.PostConstruct
+import org.slf4j.LoggerFactory
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.stereotype.Repository
 
 @Repository
 class AuditRepository(private val jdbc: JdbcTemplate) {
+
+    private val log = LoggerFactory.getLogger(AuditRepository::class.java)
+
+    @PostConstruct
+    fun migrate() {
+        // SQLite не умеет ALTER TABLE ADD COLUMN IF NOT EXISTS — гоняем под try/catch.
+        // Идемпотентно: на свежей БД колонки уже есть из schema.sql, ALTER упадёт → ловим.
+        ensureColumn("audit_log", "upstream_request_json", "TEXT")
+        ensureColumn("audit_log", "upstream_response_json", "TEXT")
+    }
+
+    private fun ensureColumn(table: String, col: String, type: String) {
+        runCatching { jdbc.execute("ALTER TABLE $table ADD COLUMN $col $type") }
+            .onSuccess { log.info("migrated: added column {}.{}", table, col) }
+            .onFailure { /* колонка уже есть */ }
+    }
 
     private val mapper = RowMapper { rs, _ ->
         AuditLog(
@@ -15,23 +33,27 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
             clientIp = rs.getString("client_ip"),
             model = rs.getString("model"),
             requestText = rs.getString("request_text"),
-            redactedText = rs.getString("redacted_text"),
             responseText = rs.getString("response_text"),
             status = rs.getString("status"),
             blockReason = rs.getString("block_reason"),
             inputFindings = rs.getString("input_findings"),
             outputFindings = rs.getString("output_findings"),
             latencyMs = rs.getObject("latency_ms")?.let { (it as Number).toLong() },
+            upstreamRequestJson = rs.getString("upstream_request_json"),
+            upstreamResponseJson = rs.getString("upstream_response_json"),
         )
     }
 
-    fun insert(log: AuditLog) {
+    fun insert(audit: AuditLog) {
+        // redacted_text — deprecated колонка, оставлена в schema.sql для совместимости старых строк, не пишется.
         jdbc.update(
-            """INSERT INTO audit_log(ts, conversation_id, client_ip, model, request_text, redacted_text,
-                response_text, status, block_reason, input_findings, output_findings, latency_ms)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""".trimIndent(),
-            log.ts, log.conversationId, log.clientIp, log.model, log.requestText, log.redactedText,
-            log.responseText, log.status, log.blockReason, log.inputFindings, log.outputFindings, log.latencyMs,
+            """INSERT INTO audit_log(ts, conversation_id, client_ip, model, request_text,
+                response_text, status, block_reason, input_findings, output_findings, latency_ms,
+                upstream_request_json, upstream_response_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""".trimIndent(),
+            audit.ts, audit.conversationId, audit.clientIp, audit.model, audit.requestText,
+            audit.responseText, audit.status, audit.blockReason, audit.inputFindings, audit.outputFindings,
+            audit.latencyMs, audit.upstreamRequestJson, audit.upstreamResponseJson,
         )
     }
 

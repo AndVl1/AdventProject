@@ -29,8 +29,12 @@ import ru.andvl.gateway.persistence.RedactionEventRepository
 import ru.andvl.gateway.ratelimit.RateLimiter
 import java.util.UUID
 
+// Маршруты:
+//   /v1/chat/completions          — собственный путь шлюза
+//   /api/v1/chat/completions      — алиас под koog OpenRouter-клиента (он бьёт по
+//                                   <baseUrl>/api/v1/chat/completions)
 @RestController
-@RequestMapping("/v1")
+@RequestMapping(path = ["/v1", "/api/v1"])
 class ProxyController(
     private val mapper: ObjectMapper,
     private val registry: ConversationRegistry,
@@ -61,7 +65,7 @@ class ProxyController(
             audit.insert(
                 AuditLog(
                     conversationId = conversationId, clientIp = ip, model = body["model"]?.asText(),
-                    requestText = null, redactedText = null, responseText = null,
+                    requestText = null, responseText = null,
                     status = "RATE_LIMITED", blockReason = "rate limit ${rateLimiter.limitPerMinute()}/min",
                     inputFindings = null, outputFindings = null, latencyMs = 0,
                 ),
@@ -80,7 +84,6 @@ class ProxyController(
         val map = registry.forConversation(conversationId)
 
         // Apply input guard to every message content. If BLOCK mode and any finding -> 400.
-        val originalRequestText = StringBuilder()
         val redactedRequestText = StringBuilder()
         val allFindings = mutableListOf<Finding>()
         var blockReason: String? = null
@@ -91,19 +94,42 @@ class ProxyController(
         for (i in 0 until messages.size()) {
             val msg = messages.get(i) as? ObjectNode ?: continue
             val role = msg["role"]?.asText() ?: ""
-            val contentText = extractTextContent(msg["content"]) ?: continue
-            originalRequestText.append("[$role] ").append(contentText).append('\n')
-            if (role == "system" && originalSystemPrompt == null) originalSystemPrompt = contentText
+            val contentText = extractTextContent(msg["content"])
+            if (contentText != null) {
+                if (role == "system" && originalSystemPrompt == null) originalSystemPrompt = contentText
 
-            val decision = inputGuard.process(contentText, map)
-            allFindings += decision.findings
-            if (!decision.allow) {
-                blockReason = decision.blockReason
-                break
+                val decision = inputGuard.process(contentText, map)
+                allFindings += decision.findings
+                if (!decision.allow) {
+                    blockReason = decision.blockReason
+                    break
+                }
+                setTextContent(msg, decision.processedText)
+                redactedRequestText.append("[$role] ").append(decision.processedText).append('\n')
             }
-            // mutate content in place
-            setTextContent(msg, decision.processedText)
-            redactedRequestText.append("[$role] ").append(decision.processedText).append('\n')
+            // Replay history: assistant сообщения с tool_calls содержат уже развёрнутые
+            // (реальные) значения в function.arguments — их надо снова заредачить, иначе
+            // LLM увидит секрет.
+            val toolCalls = msg["tool_calls"] as? ArrayNode
+            if (toolCalls != null) {
+                for (j in 0 until toolCalls.size()) {
+                    val tc = toolCalls.get(j) as? ObjectNode ?: continue
+                    val fn = tc["function"] as? ObjectNode ?: continue
+                    val argsRaw = fn["arguments"]?.asText() ?: continue
+                    val decision = inputGuard.process(argsRaw, map)
+                    allFindings += decision.findings
+                    if (!decision.allow) {
+                        blockReason = decision.blockReason
+                        break
+                    }
+                    if (decision.processedText != argsRaw) {
+                        fn.put("arguments", decision.processedText)
+                        redactedRequestText.append("[tool_call:").append(fn["name"]?.asText() ?: "?")
+                            .append("] ").append(decision.processedText).append('\n')
+                    }
+                }
+                if (blockReason != null) break
+            }
         }
 
         // Persist redaction events for audit
@@ -120,7 +146,9 @@ class ProxyController(
             audit.insert(
                 AuditLog(
                     conversationId = conversationId, clientIp = ip, model = model,
-                    requestText = originalRequestText.toString(), redactedText = null, responseText = null,
+                    // В requestText кладём текст уже после InputGuard (с плейсхолдерами).
+                    // Сырые секреты в БД не попадают.
+                    requestText = redactedRequestText.toString(), responseText = null,
                     status = "BLOCKED", blockReason = blockReason,
                     inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                     outputFindings = null, latencyMs = System.currentTimeMillis() - started,
@@ -133,27 +161,38 @@ class ProxyController(
         // If we redacted anything, prepend a system note explaining REDACTED tokens.
         if (allFindings.isNotEmpty()) injectRedactionSystemNote(messages)
 
+        // Snapshot того, что РЕАЛЬНО улетает в upstream LLM:
+        //   - после InputGuard (плейсхолдеры вместо секретов)
+        //   - после injectRedactionSystemNote (system-инструкция про REDACTED)
+        // Безопасно для хранения: сырых секретов нет, плейсхолдеры юзера тут уже стоят.
+        val upstreamRequestJson = mapper.writeValueAsString(root)
+
         // Forward upstream
         val upstream = llm.chatCompletion(root)
             ?: run {
                 audit.insert(
                     AuditLog(
                         conversationId = conversationId, clientIp = ip, model = model,
-                        requestText = originalRequestText.toString(),
-                        redactedText = redactedRequestText.toString(),
+                        requestText = redactedRequestText.toString(),             // post-guard, безопасно
                         responseText = null, status = "ERROR", blockReason = "upstream call failed",
                         inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
+                        upstreamRequestJson = upstreamRequestJson,
+                        upstreamResponseJson = null,
                     ),
                 )
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(errorBody("upstream_error", "Upstream LLM call failed"))
             }
 
-        // Process model output
+        // Snapshot upstream ДО любых мутаций: tool_calls.arguments тут ещё в REDACTED-форме
+        // (LLM видела только плейсхолдеры) → безопасно для БД. Content патчим ниже на loggableText.
+        val upstreamSnapshot = upstream.deepCopy<JsonNode>()
+        val snapChoices = upstreamSnapshot["choices"] as? ArrayNode
+
+        // Process model output.
         val choices = upstream["choices"] as? ArrayNode
-        var assistantTextRaw = ""
-        var assistantTextFinal = ""
+        var assistantTextLoggable = ""   // безопасно для audit: rescan'd, плейсхолдеры юзера НЕ развёрнуты
         val outputFindings = mutableListOf<Finding>()
         var leak = false
         var suspiciousUrls = emptyList<String>()
@@ -161,24 +200,48 @@ class ProxyController(
             for (i in 0 until choices.size()) {
                 val choice = choices.get(i) as? ObjectNode ?: continue
                 val msg = choice["message"] as? ObjectNode ?: continue
-                val raw = msg["content"]?.asText() ?: continue
-                assistantTextRaw += raw
-                val out = outputGuard.process(raw, map, originalSystemPrompt)
-                msg.put("content", out.finalText)
-                assistantTextFinal += out.finalText
-                outputFindings += out.rescanFindings
-                if (out.systemPromptLeak) leak = true
-                if (out.suspiciousUrls.isNotEmpty()) suspiciousUrls = out.suspiciousUrls
-                for (f in out.rescanFindings) {
-                    redactionEvents.insert(
-                        RedactionEvent(
-                            conversationId = conversationId, direction = "OUTPUT",
-                            ruleName = f.ruleName, placeholder = f.placeholder, originalHash = f.originalHash,
-                        ),
-                    )
+                // 1) text content path (может быть null если ответ — чисто tool_calls)
+                val raw = msg["content"]?.asText()
+                if (raw != null) {
+                    val out = outputGuard.process(raw, map, originalSystemPrompt)
+                    msg.put("content", out.finalText)
+                    // patch snapshot's content на loggable (rescan'd, без reverse)
+                    (snapChoices?.get(i) as? ObjectNode)?.let { sc ->
+                        (sc["message"] as? ObjectNode)?.put("content", out.loggableText)
+                    }
+                    assistantTextLoggable += out.loggableText
+                    outputFindings += out.rescanFindings
+                    if (out.systemPromptLeak) leak = true
+                    if (out.suspiciousUrls.isNotEmpty()) suspiciousUrls = out.suspiciousUrls
+                    for (f in out.rescanFindings) {
+                        redactionEvents.insert(
+                            RedactionEvent(
+                                conversationId = conversationId, direction = "OUTPUT",
+                                ruleName = f.ruleName, placeholder = f.placeholder, originalHash = f.originalHash,
+                            ),
+                        )
+                    }
+                }
+                // 2) tool_calls path — модель видела только REDACTED_*, в function.arguments
+                //    (JSON-строка) могут лежать плейсхолдеры. Разворачиваем для клиента,
+                //    иначе внешний tool (Gmail и т.п.) получит "REDACTED_EMAIL_1" как
+                //    реальное значение. В snapshot оставляем как было (REDACTED).
+                val toolCalls = msg["tool_calls"] as? ArrayNode
+                if (toolCalls != null) {
+                    for (j in 0 until toolCalls.size()) {
+                        val tc = toolCalls.get(j) as? ObjectNode ?: continue
+                        val fn = tc["function"] as? ObjectNode ?: continue
+                        val argsRaw = fn["arguments"]?.asText() ?: continue
+                        val argsReversed = map.reverse(argsRaw)
+                        if (argsReversed != argsRaw) {
+                            fn.put("arguments", argsReversed)
+                        }
+                    }
                 }
             }
         }
+
+        val upstreamResponseJson = mapper.writeValueAsString(upstreamSnapshot)
 
         // Cost tracking
         val usage = upstream["usage"]
@@ -205,14 +268,19 @@ class ProxyController(
         audit.insert(
             AuditLog(
                 conversationId = conversationId, clientIp = ip, model = model,
-                requestText = originalRequestText.toString(),
-                redactedText = redactedRequestText.toString(),
-                responseText = assistantTextFinal,
+                // requestText: пост-InputGuard (плейсхолдеры) — сырые секреты в БД не попадают.
+                // responseText: пост-OutputGuard rescan, ДО reverse — галлюцинации замаскированы,
+                // плейсхолдеры юзера НЕ развёрнуты в оригиналы. Reverse применён только для
+                // finalText, что отдан клиенту в HTTP-ответе.
+                requestText = redactedRequestText.toString(),
+                responseText = assistantTextLoggable,
                 status = "OK",
                 blockReason = null,
                 inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                 outputFindings = mapper.writeValueAsString(findingsSummary),
                 latencyMs = System.currentTimeMillis() - started,
+                upstreamRequestJson = upstreamRequestJson,
+                upstreamResponseJson = upstreamResponseJson,
             ),
         )
 
