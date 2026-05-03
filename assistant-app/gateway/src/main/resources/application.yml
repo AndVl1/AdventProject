@@ -3,10 +3,16 @@ dotenv:
 
 server:
   port: 8091
+  tomcat:
+    max-http-form-post-size: ${GATEWAY_MAX_BODY:20MB}
 
 spring:
   application:
     name: llm-gateway
+  servlet:
+    multipart:
+      max-request-size: ${GATEWAY_MAX_BODY:20MB}
+      max-file-size: ${GATEWAY_MAX_BODY:20MB}
   datasource:
     url: jdbc:sqlite:${GATEWAY_DB_PATH:./gateway.db}
     driver-class-name: org.sqlite.JDBC

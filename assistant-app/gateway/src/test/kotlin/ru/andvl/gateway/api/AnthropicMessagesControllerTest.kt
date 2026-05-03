@@ -413,6 +413,141 @@ class AnthropicMessagesControllerTest {
         assertEquals(defaultUrl, routerUpstream.lastReceivedBaseUrl, "claude model should route to default upstream")
     }
 
+    // --- Test 12: image block with base64 source passes through byte-equal ---
+    @Test
+    @DisplayName("imageBlockPassesThroughUntouched: base64 image block arrives upstream unchanged")
+    fun imageBlockPassesThroughUntouched() {
+        val fakeBase64 = "AAAA"
+        val root = mapper.createObjectNode()
+        root.put("model", "claude-sonnet-4-6")
+        root.put("stream", false)
+        val messages = mapper.createArrayNode()
+        val msg = mapper.createObjectNode()
+        msg.put("role", "user")
+        val content = mapper.createArrayNode()
+
+        val imageBlock = mapper.createObjectNode()
+        imageBlock.put("type", "image")
+        val source = mapper.createObjectNode()
+        source.put("type", "base64")
+        source.put("media_type", "image/jpeg")
+        source.put("data", fakeBase64)
+        imageBlock.set<ObjectNode>("source", source)
+        content.add(imageBlock)
+
+        val textBlock = mapper.createObjectNode()
+        textBlock.put("type", "text")
+        textBlock.put("text", "describe this")
+        content.add(textBlock)
+
+        msg.set<ArrayNode>("content", content)
+        messages.add(msg)
+        root.set<ArrayNode>("messages", messages)
+
+        val response = controller.messages(root, "sk-ant-test123456", null, null, null, mockRequest())
+        assertEquals(HttpStatus.OK.value(), response.statusCode.value())
+
+        val upstreamBody = fakeUpstream.lastReceivedBody
+        assertNotNull(upstreamBody)
+        val upstreamMessages = upstreamBody!!["messages"] as? ArrayNode
+        assertNotNull(upstreamMessages)
+        val upstreamContent = upstreamMessages!![0]["content"] as? ArrayNode
+        assertNotNull(upstreamContent)
+
+        val upstreamImage = upstreamContent!!.firstOrNull { it["type"]?.asText() == "image" }
+        assertNotNull(upstreamImage, "image block should be present in upstream request")
+        assertEquals("base64", upstreamImage!!["source"]["type"].asText())
+        assertEquals("image/jpeg", upstreamImage["source"]["media_type"].asText())
+        assertEquals(fakeBase64, upstreamImage["source"]["data"].asText())
+
+        // text block should also be present unmodified
+        val upstreamText = upstreamContent.firstOrNull { it["type"]?.asText() == "text" }
+        assertNotNull(upstreamText, "text block should be present in upstream request")
+        assertEquals("describe this", upstreamText!!["text"].asText())
+    }
+
+    // --- Test 13: image block with URL source passes through byte-equal ---
+    @Test
+    @DisplayName("imageBlockBase64Url: url-form image source passes through unchanged")
+    fun imageBlockBase64Url() {
+        val imageUrl = "https://example.com/cat.jpg"
+        val root = mapper.createObjectNode()
+        root.put("model", "claude-sonnet-4-6")
+        root.put("stream", false)
+        val messages = mapper.createArrayNode()
+        val msg = mapper.createObjectNode()
+        msg.put("role", "user")
+        val content = mapper.createArrayNode()
+
+        val imageBlock = mapper.createObjectNode()
+        imageBlock.put("type", "image")
+        val source = mapper.createObjectNode()
+        source.put("type", "url")
+        source.put("url", imageUrl)
+        imageBlock.set<ObjectNode>("source", source)
+        content.add(imageBlock)
+
+        msg.set<ArrayNode>("content", content)
+        messages.add(msg)
+        root.set<ArrayNode>("messages", messages)
+
+        val response = controller.messages(root, "sk-ant-test123456", null, null, null, mockRequest())
+        assertEquals(HttpStatus.OK.value(), response.statusCode.value())
+
+        val upstreamBody = fakeUpstream.lastReceivedBody
+        assertNotNull(upstreamBody)
+        val upstreamMessages = upstreamBody!!["messages"] as? ArrayNode
+        val upstreamContent = upstreamMessages!![0]["content"] as? ArrayNode
+        assertNotNull(upstreamContent)
+
+        val upstreamImage = upstreamContent!!.firstOrNull { it["type"]?.asText() == "image" }
+        assertNotNull(upstreamImage, "image block should be present in upstream request")
+        assertEquals("url", upstreamImage!!["source"]["type"].asText())
+        assertEquals(imageUrl, upstreamImage["source"]["url"].asText())
+    }
+
+    // --- Test 14: document block passes through byte-equal ---
+    @Test
+    @DisplayName("documentBlockPassesThrough: base64 document block arrives upstream unchanged")
+    fun documentBlockPassesThrough() {
+        val fakeBase64 = "JVBERi0xLjQ="
+        val root = mapper.createObjectNode()
+        root.put("model", "claude-sonnet-4-6")
+        root.put("stream", false)
+        val messages = mapper.createArrayNode()
+        val msg = mapper.createObjectNode()
+        msg.put("role", "user")
+        val content = mapper.createArrayNode()
+
+        val docBlock = mapper.createObjectNode()
+        docBlock.put("type", "document")
+        val source = mapper.createObjectNode()
+        source.put("type", "base64")
+        source.put("media_type", "application/pdf")
+        source.put("data", fakeBase64)
+        docBlock.set<ObjectNode>("source", source)
+        content.add(docBlock)
+
+        msg.set<ArrayNode>("content", content)
+        messages.add(msg)
+        root.set<ArrayNode>("messages", messages)
+
+        val response = controller.messages(root, "sk-ant-test123456", null, null, null, mockRequest())
+        assertEquals(HttpStatus.OK.value(), response.statusCode.value())
+
+        val upstreamBody = fakeUpstream.lastReceivedBody
+        assertNotNull(upstreamBody)
+        val upstreamMessages = upstreamBody!!["messages"] as? ArrayNode
+        val upstreamContent = upstreamMessages!![0]["content"] as? ArrayNode
+        assertNotNull(upstreamContent)
+
+        val upstreamDoc = upstreamContent!!.firstOrNull { it["type"]?.asText() == "document" }
+        assertNotNull(upstreamDoc, "document block should be present in upstream request")
+        assertEquals("base64", upstreamDoc!!["source"]["type"].asText())
+        assertEquals("application/pdf", upstreamDoc["source"]["media_type"].asText())
+        assertEquals(fakeBase64, upstreamDoc["source"]["data"].asText())
+    }
+
     // --- Test 10 (SEC-001): two api-keys + same client conversationId → different RedactionMaps ---
     @Test
     @DisplayName("SEC-001: different api-keys with same X-Conversation-Id get separate RedactionMaps")

@@ -523,6 +523,9 @@ class AnthropicMessagesController(
                         for (j in 0 until contentNode.size()) {
                             val part = contentNode.get(j) as? ObjectNode ?: continue
                             val partType = part["type"]?.asText() ?: continue
+                            // image/document/thinking blocks are passed through unmodified.
+                            // Base64 image data is NOT regex-scanned (documented limitation, see GuardTest case 7).
+                            // Anthropic accepts these blocks; gateway preserves them byte-equal.
                             when (partType) {
                                 "text" -> {
                                     val text = part["text"]?.asText() ?: continue
