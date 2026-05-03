@@ -32,6 +32,7 @@ class AnthropicUpstreamClient(
     private val baseUrl: String,
     @Value("\${gateway.anthropic.allowed-hosts:api.anthropic.com}")
     private val allowedHostsCsv: String,
+    private val router: ModelEndpointRouter,
 ) {
 
     private val log = LoggerFactory.getLogger(AnthropicUpstreamClient::class.java)
@@ -41,46 +42,48 @@ class AnthropicUpstreamClient(
         .version(HttpClient.Version.HTTP_2)
         .build()
 
-    // SEC-004: Fail-fast SSRF protection. Validate base-url scheme and host on startup
+    // SEC-004: Fail-fast SSRF protection. Validate ALL base-urls (default + all routes) on startup
     // to prevent misconfig leading to api-key leakage to arbitrary hosts.
     @PostConstruct
     open fun validateBaseUrl() {
-        val uri = runCatching { URI.create(baseUrl) }.getOrElse {
-            throw IllegalStateException("SEC-004: gateway.anthropic.base-url is not a valid URI: '$baseUrl'", it)
-        }
-        val scheme = uri.scheme?.lowercase()
-        val host = uri.host?.lowercase() ?: ""
-
         val allowedHosts = allowedHostsCsv.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() }
         val localHosts = setOf("localhost", "127.0.0.1")
 
-        val isLocal = host in localHosts
-        val isAllowed = host in allowedHosts
+        for (url in router.allBaseUrls()) {
+            val uri = runCatching { URI.create(url) }.getOrElse {
+                throw IllegalStateException("SEC-004: base-url is not a valid URI: '$url'", it)
+            }
+            val scheme = uri.scheme?.lowercase()
+            val host = uri.host?.lowercase() ?: ""
 
-        if (scheme == "http" && !isLocal) {
-            throw IllegalStateException(
-                "SEC-004: gateway.anthropic.base-url uses http scheme for non-local host '$host'. " +
-                    "Only https is allowed for non-localhost hosts.",
-            )
+            val isLocal = host in localHosts
+            val isAllowed = host in allowedHosts
+
+            if (scheme == "http" && !isLocal) {
+                throw IllegalStateException(
+                    "SEC-004: base-url uses http scheme for non-local host '$host'. " +
+                        "Only https is allowed for non-localhost hosts.",
+                )
+            }
+            if (scheme != "https" && scheme != "http") {
+                throw IllegalStateException(
+                    "SEC-004: base-url has unsupported scheme '$scheme'. Only https is allowed.",
+                )
+            }
+            if (!isAllowed && !isLocal) {
+                throw IllegalStateException(
+                    "SEC-004: base-url host '$host' is not in the allowlist. " +
+                        "Allowed hosts: $allowedHosts. " +
+                        "Override via gateway.anthropic.allowed-hosts property.",
+                )
+            }
+            log.info("SEC-004: upstream base-url validated: scheme=$scheme host=$host")
         }
-        if (scheme != "https" && scheme != "http") {
-            throw IllegalStateException(
-                "SEC-004: gateway.anthropic.base-url has unsupported scheme '$scheme'. Only https is allowed.",
-            )
-        }
-        if (!isAllowed && !isLocal) {
-            throw IllegalStateException(
-                "SEC-004: gateway.anthropic.base-url host '$host' is not in the allowlist. " +
-                    "Allowed hosts: $allowedHosts. " +
-                    "Override via gateway.anthropic.allowed-hosts property.",
-            )
-        }
-        log.info("SEC-004: upstream base-url validated: scheme=$scheme host=$host")
     }
 
-    private fun messagesUrl(): URI {
-        val base = baseUrl.trimEnd('/')
-        return URI.create("$base/v1/messages")
+    private fun messagesUrl(base: String): URI {
+        val trimmed = base.trimEnd('/')
+        return URI.create("$trimmed/v1/messages")
     }
 
     private fun buildRequest(
@@ -88,10 +91,11 @@ class AnthropicUpstreamClient(
         apiKey: String,
         anthropicVersion: String,
         beta: String?,
+        base: String,
     ): HttpRequest {
         val bodyBytes = mapper.writeValueAsBytes(body)
         val builder = HttpRequest.newBuilder()
-            .uri(messagesUrl())
+            .uri(messagesUrl(base))
             .header("x-api-key", apiKey)
             .header("anthropic-version", anthropicVersion)
             .header("content-type", "application/json")
@@ -102,9 +106,15 @@ class AnthropicUpstreamClient(
         return builder.build()
     }
 
-    fun send(body: JsonNode, apiKey: String, anthropicVersion: String, beta: String?): UpstreamResult {
+    fun send(
+        body: JsonNode,
+        apiKey: String,
+        anthropicVersion: String,
+        beta: String?,
+        baseUrl: String = this.baseUrl,
+    ): UpstreamResult {
         return try {
-            val request = buildRequest(body, apiKey, anthropicVersion, beta)
+            val request = buildRequest(body, apiKey, anthropicVersion, beta, baseUrl)
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
             val statusCode = response.statusCode()
             val rawBody = response.body()
@@ -122,9 +132,15 @@ class AnthropicUpstreamClient(
         }
     }
 
-    fun sendStream(body: JsonNode, apiKey: String, anthropicVersion: String, beta: String?): UpstreamStreamResult {
+    fun sendStream(
+        body: JsonNode,
+        apiKey: String,
+        anthropicVersion: String,
+        beta: String?,
+        baseUrl: String = this.baseUrl,
+    ): UpstreamStreamResult {
         return try {
-            val request = buildRequest(body, apiKey, anthropicVersion, beta)
+            val request = buildRequest(body, apiKey, anthropicVersion, beta, baseUrl)
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream())
             val statusCode = response.statusCode()
             if (statusCode in 200..299) {

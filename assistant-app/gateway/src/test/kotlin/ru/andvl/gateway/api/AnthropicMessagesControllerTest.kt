@@ -18,7 +18,9 @@ import ru.andvl.gateway.guard.ConversationRegistry
 import ru.andvl.gateway.guard.InputGuard
 import ru.andvl.gateway.guard.OutputGuard
 import ru.andvl.gateway.guard.RedactionEngine
+import ru.andvl.gateway.llm.AnthropicRoutesProperties
 import ru.andvl.gateway.llm.AnthropicUpstreamClient
+import ru.andvl.gateway.llm.ModelEndpointRouter
 import ru.andvl.gateway.llm.UpstreamResult
 import ru.andvl.gateway.llm.UpstreamStreamResult
 import ru.andvl.gateway.persistence.AuditLog
@@ -42,6 +44,7 @@ class AnthropicMessagesControllerTest {
     private lateinit var outputGuard: OutputGuard
     private lateinit var registry: ConversationRegistry
     private lateinit var fakeUpstream: FakeAnthropicUpstreamClient
+    private lateinit var fakeRouter: ModelEndpointRouter
     private lateinit var fakeAudit: FakeAuditRepository
     private lateinit var fakeRedactionEvents: FakeRedactionEventRepository
     private lateinit var fakeCosts: FakeCostRepository
@@ -56,7 +59,8 @@ class AnthropicMessagesControllerTest {
         inputGuard = InputGuard(engine, "redact")
         outputGuard = OutputGuard(engine)
         registry = ConversationRegistry(60L)
-        fakeUpstream = FakeAnthropicUpstreamClient(mapper)
+        fakeRouter = ModelEndpointRouter("https://api.anthropic.com", AnthropicRoutesProperties())
+        fakeUpstream = FakeAnthropicUpstreamClient(mapper, fakeRouter)
         fakeAudit = FakeAuditRepository()
         fakeRedactionEvents = FakeRedactionEventRepository()
         fakeCosts = FakeCostRepository()
@@ -72,6 +76,7 @@ class AnthropicMessagesControllerTest {
             outputGuard = outputGuard,
             redactionEngine = engine,
             upstream = fakeUpstream,
+            router = fakeRouter,
             sseGuard = sseGuard,
             rateLimiter = rateLimiter,
             costTable = costTable,
@@ -142,6 +147,7 @@ class AnthropicMessagesControllerTest {
             outputGuard = outputGuard,
             redactionEngine = engine,
             upstream = fakeUpstream,
+            router = fakeRouter,
             sseGuard = sseGuard,
             rateLimiter = blockingRateLimiter,
             costTable = costTable,
@@ -237,6 +243,7 @@ class AnthropicMessagesControllerTest {
             outputGuard = outputGuard,
             redactionEngine = engine,
             upstream = fakeUpstream,
+            router = fakeRouter,
             sseGuard = sseGuard,
             rateLimiter = AllowAllRateLimiter(),
             costTable = costTable,
@@ -364,6 +371,48 @@ class AnthropicMessagesControllerTest {
         assertTrue(fakeAudit.logs.any { it.status == "ERROR" }, "audit should have ERROR entry")
     }
 
+    // --- Test 11: model routing → custom upstream base-url ---
+    @Test
+    @DisplayName("modelRoutesToCustomUpstream: qwen-* routes to http://qwen.local, claude-* stays on default")
+    fun modelRoutesToCustomUpstream() {
+        val qwenBaseUrl = "http://qwen.local"
+        val defaultUrl = "https://api.anthropic.com"
+        val routesProps = AnthropicRoutesProperties(
+            routes = listOf(
+                AnthropicRoutesProperties.RouteConfig(pattern = "qwen-*", baseUrl = qwenBaseUrl),
+            ),
+        )
+        val routerWithQwen = ModelEndpointRouter(defaultUrl, routesProps)
+        val routerUpstream = FakeAnthropicUpstreamClient(mapper, routerWithQwen)
+        routerUpstream.validateBaseUrl() // no-op, just ensure it doesn't throw
+
+        val routingController = AnthropicMessagesController(
+            mapper = mapper,
+            registry = registry,
+            inputGuard = inputGuard,
+            outputGuard = outputGuard,
+            redactionEngine = engine,
+            upstream = routerUpstream,
+            router = routerWithQwen,
+            sseGuard = sseGuard,
+            rateLimiter = AllowAllRateLimiter(),
+            costTable = costTable,
+            audit = fakeAudit,
+            redactionEvents = fakeRedactionEvents,
+            costs = fakeCosts,
+        )
+
+        // qwen-3.6-35b → should route to qwen.local
+        val qwenBody = buildMessagesBody(model = "qwen-3.6-35b")
+        routingController.messages(qwenBody, "sk-test-key", null, null, null, mockRequest())
+        assertEquals(qwenBaseUrl, routerUpstream.lastReceivedBaseUrl, "qwen model should route to qwen.local")
+
+        // claude-sonnet → should route to default
+        val claudeBody = buildMessagesBody(model = "claude-sonnet-4-6")
+        routingController.messages(claudeBody, "sk-test-key", null, null, null, mockRequest())
+        assertEquals(defaultUrl, routerUpstream.lastReceivedBaseUrl, "claude model should route to default upstream")
+    }
+
     // --- Test 10 (SEC-001): two api-keys + same client conversationId → different RedactionMaps ---
     @Test
     @DisplayName("SEC-001: different api-keys with same X-Conversation-Id get separate RedactionMaps")
@@ -396,10 +445,14 @@ class AnthropicMessagesControllerTest {
 
 // --- Fake implementations ---
 
-private class FakeAnthropicUpstreamClient(private val mapper: ObjectMapper) : AnthropicUpstreamClient(
+private class FakeAnthropicUpstreamClient(
+    private val mapper: ObjectMapper,
+    router: ModelEndpointRouter,
+) : AnthropicUpstreamClient(
     mapper,
     "https://api.anthropic.com",
     "api.anthropic.com",
+    router,
 ) {
     // Override to skip @PostConstruct validation in unit tests (no real HTTP calls made)
     override fun validateBaseUrl() { /* no-op in tests */ }
@@ -424,14 +477,29 @@ private class FakeAnthropicUpstreamClient(private val mapper: ObjectMapper) : An
     )
 
     var lastReceivedBody: JsonNode? = null
+    var lastReceivedBaseUrl: String? = null
 
-    override fun send(body: JsonNode, apiKey: String, anthropicVersion: String, beta: String?): UpstreamResult {
+    override fun send(
+        body: JsonNode,
+        apiKey: String,
+        anthropicVersion: String,
+        beta: String?,
+        baseUrl: String,
+    ): UpstreamResult {
         lastReceivedBody = body
+        lastReceivedBaseUrl = baseUrl
         return nonStreamResponse(body)
     }
 
-    override fun sendStream(body: JsonNode, apiKey: String, anthropicVersion: String, beta: String?): UpstreamStreamResult {
+    override fun sendStream(
+        body: JsonNode,
+        apiKey: String,
+        anthropicVersion: String,
+        beta: String?,
+        baseUrl: String,
+    ): UpstreamStreamResult {
         lastReceivedBody = body
+        lastReceivedBaseUrl = baseUrl
         return streamResponse
     }
 }

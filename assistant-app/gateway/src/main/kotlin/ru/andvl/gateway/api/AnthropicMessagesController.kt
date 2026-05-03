@@ -24,6 +24,7 @@ import ru.andvl.gateway.guard.OutputGuard
 import ru.andvl.gateway.guard.RedactionEngine
 import ru.andvl.gateway.guard.RedactionMap
 import ru.andvl.gateway.llm.AnthropicUpstreamClient
+import ru.andvl.gateway.llm.ModelEndpointRouter
 import ru.andvl.gateway.llm.UpstreamResult
 import ru.andvl.gateway.llm.UpstreamStreamResult
 import ru.andvl.gateway.persistence.AuditLog
@@ -33,6 +34,7 @@ import ru.andvl.gateway.persistence.CostRepository
 import ru.andvl.gateway.persistence.RedactionEvent
 import ru.andvl.gateway.persistence.RedactionEventRepository
 import ru.andvl.gateway.ratelimit.RateLimiter
+import java.net.URI
 import java.util.UUID
 
 // Маршруты:
@@ -47,6 +49,7 @@ class AnthropicMessagesController(
     private val outputGuard: OutputGuard,
     private val redactionEngine: RedactionEngine,
     private val upstream: AnthropicUpstreamClient,
+    private val router: ModelEndpointRouter,
     private val sseGuard: SseGuardStream,
     private val rateLimiter: RateLimiter,
     private val costTable: CostTable,
@@ -169,18 +172,19 @@ class AnthropicMessagesController(
 
         val upstreamRequestJson = mapper.writeValueAsString(root)
         val stream = root["stream"]?.asBoolean(false) ?: false
+        val routedBaseUrl = router.resolve(root["model"]?.asText())
 
         return if (!stream) {
             handleNonStream(
                 root, effectiveApiKey, effectiveVersion, effectiveBeta,
                 conversationId, normalizedClientId, ip, model, map, originalSystemPrompt,
-                redactedRequestText, allFindings, started, upstreamRequestJson,
+                redactedRequestText, allFindings, started, upstreamRequestJson, routedBaseUrl,
             )
         } else {
             handleStream(
                 root, effectiveApiKey, effectiveVersion, effectiveBeta,
                 conversationId, normalizedClientId, ip, model, map,
-                redactedRequestText, allFindings, started, upstreamRequestJson,
+                redactedRequestText, allFindings, started, upstreamRequestJson, routedBaseUrl,
             )
         }
     }
@@ -200,8 +204,9 @@ class AnthropicMessagesController(
         allFindings: List<Finding>,
         started: Long,
         upstreamRequestJson: String,
+        routedBaseUrl: String,
     ): ResponseEntity<*> {
-        return when (val result = upstream.send(root, apiKey, version, beta)) {
+        return when (val result = upstream.send(root, apiKey, version, beta, routedBaseUrl)) {
             is UpstreamResult.Failure -> {
                 audit.insert(
                     AuditLog(
@@ -324,6 +329,7 @@ class AnthropicMessagesController(
                     .header("X-Gateway-Output-Hallucinated", hallucinatedTotal.toString())
                     .header("X-Gateway-System-Prompt-Leak", leak.toString())
                     .header("X-Gateway-Stream", "false")
+                    .header("X-Gateway-Routed-Upstream", URI.create(routedBaseUrl).host ?: routedBaseUrl)
                     .body(json)
             }
         }
@@ -343,8 +349,9 @@ class AnthropicMessagesController(
         allFindings: List<Finding>,
         started: Long,
         upstreamRequestJson: String,
+        routedBaseUrl: String,
     ): ResponseEntity<*> {
-        return when (val result = upstream.sendStream(root, apiKey, version, beta)) {
+        return when (val result = upstream.sendStream(root, apiKey, version, beta, routedBaseUrl)) {
             is UpstreamStreamResult.Failure -> {
                 audit.insert(
                     AuditLog(
@@ -431,6 +438,7 @@ class AnthropicMessagesController(
                     .header("X-Gateway-Input-Redactions", allFindings.size.toString())
                     .header("X-Gateway-Stream", "true")
                     .header("X-Gateway-System-Prompt-Leak", "skipped")
+                    .header("X-Gateway-Routed-Upstream", URI.create(routedBaseUrl).host ?: routedBaseUrl)
                     .body(streamingBody)
             }
         }
