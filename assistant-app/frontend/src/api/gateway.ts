@@ -27,6 +27,12 @@ export interface GatewayStats {
   redactionsByRule: Record<string, number>
   activeConversations: number
   rateLimitRpm: number
+  byModelAudit?: Array<{
+    model: string | null
+    endpointType: string | null
+    count: number
+    avgLatencyMs: number | null
+  }>
 }
 
 export interface AuditEntry {
@@ -44,6 +50,19 @@ export interface AuditEntry {
   latencyMs: number | null
   upstreamRequestJson: string | null
   upstreamResponseJson: string | null
+  endpointType: string | null
+  routedUpstream: string | null
+}
+
+export interface RouteConfig {
+  pattern: string
+  baseUrl: string
+}
+
+export interface GatewayRoutes {
+  default: string
+  routes: RouteConfig[]
+  allowedHosts: string[]
 }
 
 export interface RedactionEntry {
@@ -77,8 +96,14 @@ export const gateway = {
   deleteRule(id: number): Promise<void> {
     return gw.delete(`/api/admin/rules/${id}`).then(() => undefined)
   },
-  audit(limit = 100): Promise<AuditEntry[]> {
-    return gw.get<AuditEntry[]>(`/api/admin/audit?limit=${limit}`).then((r) => r.data)
+  routes(): Promise<GatewayRoutes> {
+    return gw.get<GatewayRoutes>('/api/admin/routes').then((r) => r.data)
+  },
+  audit(limit = 100, opts?: { endpointType?: string; model?: string }): Promise<AuditEntry[]> {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (opts?.endpointType) params.set('endpointType', opts.endpointType)
+    if (opts?.model) params.set('model', opts.model)
+    return gw.get<AuditEntry[]>(`/api/admin/audit?${params.toString()}`).then((r) => r.data)
   },
   redactions(limit = 100): Promise<RedactionEntry[]> {
     return gw.get<RedactionEntry[]>(`/api/admin/redactions?limit=${limit}`).then((r) => r.data)

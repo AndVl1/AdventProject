@@ -4,6 +4,7 @@ import {
   gateway,
   type AuditEntry,
   type GatewayRule,
+  type GatewayRoutes,
   type GatewayStats,
   type RedactionEntry,
   type RuleUpsert,
@@ -13,7 +14,13 @@ const stats = ref<GatewayStats | null>(null)
 const rules = ref<GatewayRule[]>([])
 const audit = ref<AuditEntry[]>([])
 const redactions = ref<RedactionEntry[]>([])
+const routes = ref<GatewayRoutes | null>(null)
 const loadError = ref<string | null>(null)
+
+// Audit filters
+const auditFilterEndpointType = ref('')
+const auditFilterModel = ref('')
+let auditDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const editing = ref<Partial<GatewayRule> | null>(null)
 const editingForm = ref<RuleUpsert>({
@@ -40,19 +47,37 @@ function prettyJson(s: string | null): string {
   }
 }
 
+async function loadAudit() {
+  const opts: { endpointType?: string; model?: string } = {}
+  if (auditFilterEndpointType.value) opts.endpointType = auditFilterEndpointType.value
+  if (auditFilterModel.value) opts.model = auditFilterModel.value
+  try {
+    audit.value = await gateway.audit(50, opts)
+  } catch (e) {
+    loadError.value = (e as Error).message ?? 'Failed to load audit'
+  }
+}
+
+function onAuditFilterChange() {
+  if (auditDebounceTimer) clearTimeout(auditDebounceTimer)
+  auditDebounceTimer = setTimeout(loadAudit, 300)
+}
+
 async function loadAll() {
   loadError.value = null
   try {
-    const [s, r, a, rd] = await Promise.all([
+    const [s, r, a, rd, ro] = await Promise.all([
       gateway.stats(),
       gateway.listRules(),
-      gateway.audit(50),
+      gateway.audit(50, {}),
       gateway.redactions(50),
+      gateway.routes(),
     ])
     stats.value = s
     rules.value = r
     audit.value = a
     redactions.value = rd
+    routes.value = ro
   } catch (e) {
     loadError.value = (e as Error).message ?? 'Failed to load'
   }
@@ -127,6 +152,61 @@ onMounted(loadAll)
     </section>
 
     <section class="card">
+      <h2>Requests by Model</h2>
+      <template v-if="stats && stats.byModelAudit && stats.byModelAudit.length > 0">
+        <table>
+          <thead>
+            <tr><th>Model</th><th>Endpoint</th><th>Count</th><th>Avg latency (ms)</th></tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(row, i) in [...(stats.byModelAudit)].sort((a, b) => b.count - a.count)"
+              :key="i"
+            >
+              <td>{{ row.model ?? '—' }}</td>
+              <td>
+                <span v-if="row.endpointType" :class="`badge badge-${row.endpointType}`">{{ row.endpointType }}</span>
+                <span v-else>—</span>
+              </td>
+              <td>{{ row.count }}</td>
+              <td>{{ row.avgLatencyMs != null ? row.avgLatencyMs.toFixed(0) : '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
+      <p v-else class="hint">no data yet</p>
+    </section>
+
+    <section class="card">
+      <h2>Model → Endpoint Routes</h2>
+      <template v-if="routes">
+        <div class="stats-grid" style="margin-bottom: 12px;">
+          <div><b>Default upstream:</b> <code>{{ routes.default }}</code></div>
+          <div>
+            <b>Allowed hosts:</b>
+            <span v-if="routes.allowedHosts.length > 0">
+              <code v-for="h in routes.allowedHosts" :key="h" class="badge-host">{{ h }}</code>
+            </span>
+            <span v-else class="hint">none</span>
+          </div>
+        </div>
+        <template v-if="routes.routes.length > 0">
+          <table>
+            <thead><tr><th>Pattern</th><th>Base URL</th></tr></thead>
+            <tbody>
+              <tr v-for="(rt, i) in routes.routes" :key="i">
+                <td><code>{{ rt.pattern }}</code></td>
+                <td><code>{{ rt.baseUrl }}</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+        <p v-else class="hint">no custom routes — все запросы идут на default</p>
+      </template>
+      <p v-else class="hint">loading...</p>
+    </section>
+
+    <section class="card">
       <h2>Quick proxy test</h2>
       <div class="row">
         <input v-model="testModel" placeholder="model id" />
@@ -197,13 +277,44 @@ onMounted(loadAll)
 
     <section class="card">
       <h2>Recent audit ({{ audit.length }})</h2>
+      <div class="row audit-filters">
+        <label class="filter-label">
+          Endpoint type
+          <select v-model="auditFilterEndpointType" @change="onAuditFilterChange">
+            <option value="">All</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </label>
+        <label class="filter-label">
+          Model glob
+          <input
+            v-model="auditFilterModel"
+            placeholder="e.g. claude-*"
+            @input="onAuditFilterChange"
+            style="width: 180px;"
+          />
+        </label>
+      </div>
       <table>
-        <thead><tr><th>ts</th><th>status</th><th>model</th><th>ip</th><th>conv</th><th>lat</th><th>block</th><th></th></tr></thead>
+        <thead>
+          <tr>
+            <th>ts</th><th>status</th><th>model</th>
+            <th>Endpoint</th><th>Upstream</th>
+            <th>ip</th><th>conv</th><th>lat</th><th>block</th><th></th>
+          </tr>
+        </thead>
         <tbody>
           <tr v-for="a in audit" :key="a.id">
             <td>{{ fmtTs(a.ts) }}</td>
             <td :class="`st-${a.status.toLowerCase()}`">{{ a.status }}</td>
-            <td>{{ a.model }}</td><td>{{ a.clientIp }}</td>
+            <td>{{ a.model }}</td>
+            <td>
+              <span v-if="a.endpointType" :class="`badge badge-${a.endpointType}`">{{ a.endpointType }}</span>
+              <span v-else>—</span>
+            </td>
+            <td><code v-if="a.routedUpstream">{{ a.routedUpstream }}</code><span v-else>—</span></td>
+            <td>{{ a.clientIp }}</td>
             <td><code>{{ a.conversationId?.slice(0, 8) }}</code></td>
             <td>{{ a.latencyMs }}ms</td>
             <td>{{ a.blockReason ?? '' }}</td>
@@ -284,4 +395,11 @@ code { background: var(--color-surface-alt); padding: 1px 4px; border-radius: 2p
 }
 .hint { font-size: 12px; color: var(--color-text-muted, #888); margin-bottom: 4px; }
 label { display: block; font-size: 13px; margin: 4px 0; }
+.audit-filters { flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+.filter-label { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.filter-label select, .filter-label input { width: auto; }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+.badge-openai { background: #1a73e8; color: #fff; }
+.badge-anthropic { background: #c97c3e; color: #fff; }
+.badge-host { background: var(--color-surface-alt); padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-right: 4px; }
 </style>
