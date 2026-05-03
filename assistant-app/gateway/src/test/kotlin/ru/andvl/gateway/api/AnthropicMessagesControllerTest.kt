@@ -121,7 +121,7 @@ class AnthropicMessagesControllerTest {
     @DisplayName("missing x-api-key returns 401 with authentication_error")
     fun missingApiKey() {
         val body = buildMessagesBody()
-        val response = controller.messages(body, null, null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(body), null, null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.UNAUTHORIZED.value(), response.statusCode.value())
         val bodyStr = mapper.writeValueAsString(response.body)
@@ -137,7 +137,7 @@ class AnthropicMessagesControllerTest {
     fun bearerAuthAccepted() {
         val body = buildMessagesBody()
         val response = controller.messages(
-            body, null, "Bearer sk-ant-oat01-abcdef", null, null, null, mockRequest(),
+            mapper.writeValueAsBytes(body), null, "Bearer sk-ant-oat01-abcdef", null, null, null, mockRequest(),
         mockResponse(),
         )
 
@@ -151,7 +151,7 @@ class AnthropicMessagesControllerTest {
     fun apiKeyWinsOverBearer() {
         val body = buildMessagesBody()
         controller.messages(
-            body, "sk-prim-key", "Bearer sk-fallback", null, null, null, mockRequest(),
+            mapper.writeValueAsBytes(body), "sk-prim-key", "Bearer sk-fallback", null, null, null, mockRequest(),
         mockResponse(),
         )
 
@@ -166,7 +166,7 @@ class AnthropicMessagesControllerTest {
     @DisplayName("body without messages array returns 400")
     fun bodyWithoutMessages() {
         val body = mapper.createObjectNode().apply { put("model", "claude-test") }
-        val response = controller.messages(body, "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(body), "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.BAD_REQUEST.value(), response.statusCode.value())
         val bodyStr = mapper.writeValueAsString(response.body)
@@ -196,7 +196,7 @@ class AnthropicMessagesControllerTest {
         )
 
         val body = buildMessagesBody()
-        val response = blockingController.messages(body, "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
+        val response = blockingController.messages(mapper.writeValueAsBytes(body), "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.TOO_MANY_REQUESTS.value(), response.statusCode.value())
         val resetHeader = response.headers["X-RateLimit-Reset-Ms"]
@@ -236,7 +236,7 @@ class AnthropicMessagesControllerTest {
             UpstreamResult.Ok(response)
         }
 
-        val response = controller.messages(body, "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(body), "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.OK.value(), response.statusCode.value())
 
@@ -292,7 +292,7 @@ class AnthropicMessagesControllerTest {
         )
 
         val body = buildMessagesBody(userText = "My email is secret@example.com")
-        val response = blockingController.messages(body, "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
+        val response = blockingController.messages(mapper.writeValueAsBytes(body), "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.UNPROCESSABLE_ENTITY.value(), response.statusCode.value())
         val bodyStr = mapper.writeValueAsString(response.body)
@@ -326,7 +326,7 @@ class AnthropicMessagesControllerTest {
         )
 
         val resp = mockResponse()
-        val ret = controller.messages(body, "sk-ant-test123456", null, null, null, null, mockRequest(), resp)
+        val ret = controller.messages(mapper.writeValueAsBytes(body), "sk-ant-test123456", null, null, null, null, mockRequest(), resp)
 
         // Streaming case returns null; data and headers are on the response object.
         assertEquals(null, ret)
@@ -352,7 +352,7 @@ class AnthropicMessagesControllerTest {
         fakeUpstream.nonStreamResponse = { _ -> UpstreamResult.Error(401, errorNode, null) }
 
         val body = buildMessagesBody(userText = "Hello", stream = false)
-        val response = controller.messages(body, "sk-ant-test-key", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(body), "sk-ant-test-key", null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.UNAUTHORIZED.value(), response.statusCode.value())
         assertTrue(fakeAudit.logs.any { it.status == "ERROR" }, "audit should have ERROR entry")
@@ -365,7 +365,7 @@ class AnthropicMessagesControllerTest {
         fakeUpstream.nonStreamResponse = { _ -> UpstreamResult.Failure(java.io.IOException("connection refused")) }
 
         val body = buildMessagesBody(userText = "Hello", stream = false)
-        val response = controller.messages(body, "sk-ant-test-key", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(body), "sk-ant-test-key", null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.BAD_GATEWAY.value(), response.statusCode.value())
         val bodyStr = mapper.writeValueAsString(response.body)
@@ -386,7 +386,7 @@ class AnthropicMessagesControllerTest {
         fakeUpstream.streamResponse = UpstreamStreamResult.Error(503, errorNode, null)
 
         val body = buildMessagesBody(userText = "Hello", stream = true)
-        val response = controller.messages(body, "sk-ant-test-key", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(body), "sk-ant-test-key", null, null, null, null, mockRequest(), mockResponse())
 
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE.value(), response.statusCode.value())
         assertTrue(fakeAudit.logs.any { it.status == "ERROR" }, "audit should have ERROR entry")
@@ -425,12 +425,12 @@ class AnthropicMessagesControllerTest {
 
         // qwen-3.6-35b → should route to qwen.local
         val qwenBody = buildMessagesBody(model = "qwen-3.6-35b")
-        routingController.messages(qwenBody, "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
+        routingController.messages(mapper.writeValueAsBytes(qwenBody), "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
         assertEquals(qwenBaseUrl, routerUpstream.lastReceivedBaseUrl, "qwen model should route to qwen.local")
 
         // claude-sonnet → should route to default
         val claudeBody = buildMessagesBody(model = "claude-sonnet-4-6")
-        routingController.messages(claudeBody, "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
+        routingController.messages(mapper.writeValueAsBytes(claudeBody), "sk-test-key", null, null, null, null, mockRequest(), mockResponse())
         assertEquals(defaultUrl, routerUpstream.lastReceivedBaseUrl, "claude model should route to default upstream")
     }
 
@@ -465,7 +465,7 @@ class AnthropicMessagesControllerTest {
         messages.add(msg)
         root.set<ArrayNode>("messages", messages)
 
-        val response = controller.messages(root, "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(root), "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
         assertEquals(HttpStatus.OK.value(), response.statusCode.value())
 
         val upstreamBody = fakeUpstream.lastReceivedBody
@@ -512,7 +512,7 @@ class AnthropicMessagesControllerTest {
         messages.add(msg)
         root.set<ArrayNode>("messages", messages)
 
-        val response = controller.messages(root, "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(root), "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
         assertEquals(HttpStatus.OK.value(), response.statusCode.value())
 
         val upstreamBody = fakeUpstream.lastReceivedBody
@@ -553,7 +553,7 @@ class AnthropicMessagesControllerTest {
         messages.add(msg)
         root.set<ArrayNode>("messages", messages)
 
-        val response = controller.messages(root, "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
+        val response = controller.messages(mapper.writeValueAsBytes(root), "sk-ant-test123456", null, null, null, null, mockRequest(), mockResponse())
         assertEquals(HttpStatus.OK.value(), response.statusCode.value())
 
         val upstreamBody = fakeUpstream.lastReceivedBody
@@ -638,33 +638,48 @@ private class FakeAnthropicUpstreamClient(
     var lastReceivedApiKey: String? = null
     var lastReceivedBearerToken: String? = null
 
+    var lastReceivedSessionId: String? = null
+    var lastReceivedPassthrough: Map<String, List<String>>? = null
+
     override fun send(
-        body: JsonNode,
+        bodyBytes: ByteArray,
         apiKey: String?,
         bearerToken: String?,
         anthropicVersion: String,
         beta: String?,
         baseUrl: String,
+        sessionId: String?,
+        passthroughHeaders: Map<String, List<String>>,
+        upstreamQuery: String?,
     ): UpstreamResult {
+        val body = mapper.readTree(bodyBytes)
         lastReceivedBody = body
         lastReceivedBaseUrl = baseUrl
         lastReceivedApiKey = apiKey
         lastReceivedBearerToken = bearerToken
+        lastReceivedSessionId = sessionId
+        lastReceivedPassthrough = passthroughHeaders
         return nonStreamResponse(body)
     }
 
     override fun sendStream(
-        body: JsonNode,
+        bodyBytes: ByteArray,
         apiKey: String?,
         bearerToken: String?,
         anthropicVersion: String,
         beta: String?,
         baseUrl: String,
+        sessionId: String?,
+        passthroughHeaders: Map<String, List<String>>,
+        upstreamQuery: String?,
     ): UpstreamStreamResult {
+        val body = mapper.readTree(bodyBytes)
         lastReceivedBody = body
         lastReceivedBaseUrl = baseUrl
         lastReceivedApiKey = apiKey
         lastReceivedBearerToken = bearerToken
+        lastReceivedSessionId = sessionId
+        lastReceivedPassthrough = passthroughHeaders
         return streamResponse
     }
 }

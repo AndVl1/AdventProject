@@ -52,6 +52,20 @@
             <version>4.0.0</version>
         </dependency>
 
+        <!--
+          OkHttp вместо встроенного java.net.http.HttpClient:
+          - JDK 21 HttpClient на HTTP/2 SelectorManager уходил в spin-loop при разрыве клиента
+            в середине SSE (JDK-8334077, JDK-8295056) — 97% CPU per stuck worker.
+          - Переключение на HTTP/1.1 не помогло: SSLEngineImpl.unwrap залипает в ReentrantLock
+            (JDK-8338105 / JDK-8328651) → 200%+ CPU на 2 воркерах.
+          OkHttp — battle-tested на streaming + SSL, без этих багов.
+        -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+            <version>4.12.0</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
