@@ -58,7 +58,12 @@ class ProxyController(
     ): ResponseEntity<JsonNode> {
         val started = System.currentTimeMillis()
         val ip = clientIp(request)
-        val conversationId = conversationIdHeader?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+
+        // SEC-001: normalize client-supplied id and bind registry key to ip as proxy key
+        // ProxyController doesn't have x-api-key; use ip as namespace (less ideal but consistent)
+        // For full isolation, we use ip-based hash here since there's no api-key in this endpoint
+        val normalizedClientId = ConversationKey.normalize(conversationIdHeader) ?: UUID.randomUUID().toString()
+        val conversationId = ConversationKey.registryKey(ip, normalizedClientId)
 
         val rl = rateLimiter.check(ip)
         if (!rl.allowed) {
@@ -279,7 +284,8 @@ class ProxyController(
         )
 
         return ResponseEntity.ok()
-            .header("X-Conversation-Id", conversationId)
+            // SEC-001: return only client-facing id (no apiKeyHash/ipHash exposed)
+            .header("X-Conversation-Id", normalizedClientId)
             .header("X-Gateway-Input-Redactions", allFindings.size.toString())
             .header("X-Gateway-Output-Hallucinated", hallucinatedTotal.toString())
             .header("X-Gateway-System-Prompt-Leak", leak.toString())

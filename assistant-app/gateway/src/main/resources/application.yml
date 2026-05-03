@@ -19,6 +19,8 @@ gateway:
   upstream:
     base-url: ${GATEWAY_UPSTREAM_URL:https://openrouter.ai/api/v1}
     api-key: ${OPENROUTER_API_KEY:}
+  anthropic:
+    base-url: ${GATEWAY_ANTHROPIC_URL:https://api.anthropic.com}
   ratelimit:
     requests-per-minute: ${GATEWAY_RPM:60}
   redaction:
