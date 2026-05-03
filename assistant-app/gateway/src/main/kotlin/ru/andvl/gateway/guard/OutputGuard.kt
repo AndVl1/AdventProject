@@ -5,7 +5,7 @@ import org.springframework.stereotype.Service
 data class OutputResult(
     val finalText: String,                    // что отдаём клиенту (плейсхолдеры развернуты в оригиналы)
     val loggableText: String,                 // безопасно для БД: галлюцинации замаскированы, плейсхолдеры юзера НЕ развернуты
-    val rescanFindings: List<Finding>,        // model-hallucinated secrets that we masked
+    val hallucinatedCount: Int,               // сколько секрет-подобных значений сама модель нагенерировала
     val systemPromptLeak: Boolean,
     val suspiciousUrls: List<String>,
     val notes: List<String>,
@@ -40,16 +40,32 @@ class OutputGuard(private val engine: RedactionEngine) {
 
         // 1) re-scan RAW output for hallucinated secrets BEFORE reversing the map.
         //    Otherwise reversed user secrets get masked again, defeating the round-trip.
+        //    rescan.text содержит rule.placeholder (типа REDACTED_EMAIL) на месте каждой
+        //    галлюцинации.
         val rescan = engine.apply(rawOutput, null)
+
+        // 2) Каждую галлюцинацию заменяем на нумерованный generic-плейсхолдер
+        //    LLM_OUTPUT_GUARD_<N>. Оригиналы НЕ сохраняем нигде — ни в БД, ни в
+        //    RedactionMap. Юзер просто увидит LLM_OUTPUT_GUARD_N вместо секрета.
+        var sanitized = rescan.text
+        for ((idx, f) in rescan.findings.withIndex()) {
+            val n = idx + 1
+            val pos = sanitized.indexOf(f.placeholder)
+            if (pos >= 0) {
+                sanitized = sanitized.substring(0, pos) +
+                    "LLM_OUTPUT_GUARD_$n" +
+                    sanitized.substring(pos + f.placeholder.length)
+            }
+        }
         if (rescan.findings.isNotEmpty()) {
-            notes += "masked ${rescan.findings.size} model-generated secret-shaped value(s)"
+            notes += "masked ${rescan.findings.size} model-generated secret-shaped value(s) " +
+                "as LLM_OUTPUT_GUARD_<N>"
         }
 
-        // 2) reverse REDACTED_N -> original on the rescan-cleaned text, so user sees
-        //    their own values back. (Hallucinated keys are now opaque REDACTED_TYPE
-        //    placeholders not present in the conversation map, so they survive.)
-        val reversed = map.reverse(rescan.text)
-        if (reversed != rescan.text) notes += "reversed placeholder(s) in output"
+        // 3) reverse REDACTED_N -> original on the sanitized text, so user sees
+        //    their own values back. LLM_OUTPUT_GUARD_<N> остаются как есть.
+        val reversed = map.reverse(sanitized)
+        if (reversed != sanitized) notes += "reversed placeholder(s) in output"
         val masked = reversed
 
         // 3) system prompt leak detection — look for any 25-char window from the
@@ -67,8 +83,11 @@ class OutputGuard(private val engine: RedactionEngine) {
 
         return OutputResult(
             finalText = masked,
-            loggableText = rescan.text,   // до reverse: безопасно для записи в audit
-            rescanFindings = rescan.findings,
+            // loggableText: rescan-санитайзенный (с LLM_OUTPUT_GUARD_N), без reverse юзерских
+            // плейсхолдеров. В БД попадает ровно эта версия — ни сырых секретов модели,
+            // ни сырых секретов юзера.
+            loggableText = sanitized,
+            hallucinatedCount = rescan.findings.size,
             systemPromptLeak = leak,
             suspiciousUrls = suspicious,
             notes = notes,

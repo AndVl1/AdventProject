@@ -146,8 +146,12 @@ class GuardTest {
         // AWS access key = AKIA + 16 uppercase alphanumerics
         val modelOutput = "Sure, an example AWS key would be AKIAEXAMPLEKEY123456 for testing."
         val res = outputGuard.process(modelOutput, map, originalSystemPrompt = null)
-        assertTrue(res.rescanFindings.any { it.ruleName == "aws_access_key" })
+        assertTrue(res.hallucinatedCount >= 1)
         assertFalse(res.finalText.contains("AKIAEXAMPLEKEY123456"))
+        // галлюцинация замаскирована именно как LLM_OUTPUT_GUARD_<N>, а не как
+        // type-typed REDACTED_AWS_KEY (тот резервируется только для юзерских значений).
+        assertTrue(res.finalText.contains("LLM_OUTPUT_GUARD_1"))
+        assertFalse(res.finalText.contains("REDACTED_AWS"))
     }
 
     // --- Case 11: system prompt leak detection ---
@@ -174,6 +178,33 @@ class GuardTest {
         val res = outputGuard.process(modelEcho, map, originalSystemPrompt = null)
         assertTrue(res.finalText.contains("AKIAIOSFODNN7EXAMPLE"))
         assertFalse(res.finalText.contains(placeholder))
+    }
+
+    // --- Case 12.5: multiple hallucinations get distinct LLM_OUTPUT_GUARD_<N> placeholders ---
+    @Test
+    @DisplayName("OUTPUT: multiple model-generated secrets get LLM_OUTPUT_GUARD_1, _2, ...")
+    fun multipleHallucinationsNumbered() {
+        val map = freshMap()
+        val out = "Examples: AKIAEXAMPLEKEY123456 and AKIAANOTHERKEY7890ABC and contact me at fake@example.com."
+        val res = outputGuard.process(out, map, originalSystemPrompt = null)
+        assertTrue(res.hallucinatedCount >= 2)
+        assertTrue(res.finalText.contains("LLM_OUTPUT_GUARD_1"))
+        assertTrue(res.finalText.contains("LLM_OUTPUT_GUARD_2"))
+        // ни один из оригиналов не утёк юзеру
+        assertFalse(res.finalText.contains("AKIAEXAMPLEKEY123456"))
+        assertFalse(res.finalText.contains("AKIAANOTHERKEY7890ABC"))
+        assertFalse(res.finalText.contains("fake@example.com"))
+    }
+
+    // --- Case 12.6: hallucinated secrets do NOT pollute the conversation map ---
+    @Test
+    @DisplayName("OUTPUT: hallucinated values are not stored in RedactionMap")
+    fun hallucinationsNotPersisted() {
+        val map = freshMap()
+        val out = "Here is a key: AKIAEXAMPLEKEY123456"
+        val sizeBefore = map.size()
+        outputGuard.process(out, map, originalSystemPrompt = null)
+        assertEquals(sizeBefore, map.size(), "rescan must not register placeholders into the conversation map")
     }
 
     // --- Case 13: BLOCK mode rejects request ---

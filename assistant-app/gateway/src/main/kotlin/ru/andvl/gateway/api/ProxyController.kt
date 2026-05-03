@@ -192,8 +192,8 @@ class ProxyController(
 
         // Process model output.
         val choices = upstream["choices"] as? ArrayNode
-        var assistantTextLoggable = ""   // безопасно для audit: rescan'd, плейсхолдеры юзера НЕ развёрнуты
-        val outputFindings = mutableListOf<Finding>()
+        var assistantTextLoggable = ""   // безопасно для audit: sanitized + плейсхолдеры юзера НЕ развёрнуты
+        var hallucinatedTotal = 0        // только счётчик; сами значения нигде не сохраняем
         var leak = false
         var suspiciousUrls = emptyList<String>()
         if (choices != null && choices.size() > 0) {
@@ -205,22 +205,15 @@ class ProxyController(
                 if (raw != null) {
                     val out = outputGuard.process(raw, map, originalSystemPrompt)
                     msg.put("content", out.finalText)
-                    // patch snapshot's content на loggable (rescan'd, без reverse)
+                    // patch snapshot's content на loggable (sanitized, без reverse)
                     (snapChoices?.get(i) as? ObjectNode)?.let { sc ->
                         (sc["message"] as? ObjectNode)?.put("content", out.loggableText)
                     }
                     assistantTextLoggable += out.loggableText
-                    outputFindings += out.rescanFindings
+                    hallucinatedTotal += out.hallucinatedCount
                     if (out.systemPromptLeak) leak = true
                     if (out.suspiciousUrls.isNotEmpty()) suspiciousUrls = out.suspiciousUrls
-                    for (f in out.rescanFindings) {
-                        redactionEvents.insert(
-                            RedactionEvent(
-                                conversationId = conversationId, direction = "OUTPUT",
-                                ruleName = f.ruleName, placeholder = f.placeholder, originalHash = f.originalHash,
-                            ),
-                        )
-                    }
+                    // Галлюцинации НЕ пишем в redaction_event — оригиналы и хэши не храним.
                 }
                 // 2) tool_calls path — модель видела только REDACTED_*, в function.arguments
                 //    (JSON-строка) могут лежать плейсхолдеры. Разворачиваем для клиента,
@@ -260,7 +253,8 @@ class ProxyController(
 
         val findingsSummary = buildMap<String, Any> {
             put("input", allFindings.groupingBy { it.ruleName }.eachCount())
-            put("output", outputFindings.groupingBy { it.ruleName }.eachCount())
+            // только число галлюцинаций; конкретные значения не хранятся.
+            put("output_hallucinated", hallucinatedTotal)
             put("system_prompt_leak", leak)
             put("suspicious_urls", suspiciousUrls)
         }
@@ -287,7 +281,7 @@ class ProxyController(
         return ResponseEntity.ok()
             .header("X-Conversation-Id", conversationId)
             .header("X-Gateway-Input-Redactions", allFindings.size.toString())
-            .header("X-Gateway-Output-Redactions", outputFindings.size.toString())
+            .header("X-Gateway-Output-Hallucinated", hallucinatedTotal.toString())
             .header("X-Gateway-System-Prompt-Leak", leak.toString())
             .body(upstream)
     }
