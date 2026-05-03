@@ -1,0 +1,138 @@
+name: deploy gateway
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'git ref to deploy (branch/tag/sha). default — current'
+        required: false
+        default: ''
+      restart:
+        description: 'restart systemd unit after upload'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-gateway
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build jar
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: assistant-app
+
+    outputs:
+      jar_name: ${{ steps.locate.outputs.jar_name }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: setup jdk 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: mvn package (gateway)
+        run: ./backend/mvnw -B -ntp -f gateway/pom.xml -DskipTests package
+
+      - name: locate jar
+        id: locate
+        run: |
+          JAR=$(ls gateway/target/*.jar | grep -v 'original' | head -1)
+          test -f "$JAR" || { echo "jar not found"; exit 1; }
+          echo "jar_name=$(basename "$JAR")" >> "$GITHUB_OUTPUT"
+          cp "$JAR" gateway/target/llm-gateway.jar
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-gateway-jar
+          path: assistant-app/gateway/target/llm-gateway.jar
+          retention-days: 7
+
+  deploy:
+    name: deploy via ssh
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: llm-gateway-jar
+          path: ./dist
+
+      - name: validate secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          missing=()
+          [ -z "$DEPLOY_HOST" ]    && missing+=("DEPLOY_HOST")
+          [ -z "$DEPLOY_USER" ]    && missing+=("DEPLOY_USER")
+          [ -z "$DEPLOY_SSH_KEY" ] && missing+=("DEPLOY_SSH_KEY")
+          [ -z "$DEPLOY_PATH" ]    && missing+=("DEPLOY_PATH")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "missing secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: scp jar to host
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:      ${{ secrets.DEPLOY_SSH_KEY }}
+          port:     ${{ secrets.DEPLOY_PORT || 22 }}
+          source:   'dist/llm-gateway.jar'
+          target:   ${{ secrets.DEPLOY_PATH }}
+          strip_components: 1
+          overwrite: true
+
+      - name: restart service via ssh
+        if: ${{ inputs.restart == 'true' }}
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host:     ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:      ${{ secrets.DEPLOY_SSH_KEY }}
+          port:     ${{ secrets.DEPLOY_PORT || 22 }}
+          envs: DEPLOY_PATH,DEPLOY_SERVICE
+          script_stop: true
+          script: |
+            set -euo pipefail
+            sudo systemctl restart "${DEPLOY_SERVICE:-llm-gateway}"
+            sleep 3
+            sudo systemctl is-active "${DEPLOY_SERVICE:-llm-gateway}"
+        env:
+          DEPLOY_PATH:    ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SERVICE: ${{ secrets.DEPLOY_SERVICE }}
+
+      - name: deploy summary
+        if: always()
+        run: |
+          {
+            echo "## deploy gateway"
+            echo ""
+            echo "- ref: \`${{ inputs.ref || github.ref }}\`"
+            echo "- restart: \`${{ inputs.restart }}\`"
+            echo "- jar: \`${{ needs.build.outputs.jar_name }}\` → \`\$DEPLOY_PATH\`"
+            echo "- status: \`${{ job.status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

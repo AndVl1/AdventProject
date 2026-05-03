@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ChatView from '@/views/ChatView.vue'
+import AdminGatewayView from '@/views/AdminGatewayView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -8,6 +9,11 @@ const router = createRouter({
       path: '/',
       name: 'chat',
       component: ChatView,
+    },
+    {
+      path: '/admin/gateway',
+      name: 'admin-gateway',
+      component: AdminGatewayView,
     },
     // Wildcard — всё остальное редиректим на главную
     {

@@ -42,6 +42,8 @@ const selectedPromptId = computed({
     <!-- Бэкенд недоступен — модели не загружены -->
     <span v-else class="header__model-unavailable">Model N/A</span>
 
+    <router-link to="/admin/gateway" class="header__link">Gateway Admin →</router-link>
+
     <select
       v-if="store.availablePrompts.length > 0"
       v-model="selectedPromptId"
@@ -97,5 +99,16 @@ const selectedPromptId = computed({
 .header__model-unavailable {
   font-size: 0.85rem;
   color: var(--color-hint);
+}
+
+.header__link {
+  font-size: 0.85rem;
+  color: var(--color-header-text);
+  text-decoration: none;
+  margin-left: auto;
+}
+
+.header__link:hover {
+  color: var(--color-accent);
 }
 </style>

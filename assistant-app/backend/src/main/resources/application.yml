@@ -12,7 +12,11 @@ ai:
   koog:
     openrouter:
       enabled: true
-      api-key: ${OPENROUTER_API_KEY:}
+      # base-url переопределяется на локальный LLM Gateway (assistant-app/gateway, порт 8091).
+      # Реальный ключ для upstream OpenRouter живёт в gateway/.env, koog-клиент сюда передаёт
+      # gateway-managed (gateway игнорирует входящий Authorization и подставляет свой).
+      base-url: ${LLM_GATEWAY_URL:http://localhost:8091}
+      api-key: ${OPENROUTER_API_KEY:gateway-managed}
     anthropic:
       enabled: ${ANTHROPIC_ENABLED:false}
       api-key: ${ANTHROPIC_API_KEY:}
