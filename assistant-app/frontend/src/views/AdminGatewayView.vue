@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import {
   gateway,
   type AuditEntry,
+  type ConnectionInfo,
   type GatewayRule,
   type GatewayRoutes,
   type GatewayStats,
@@ -15,7 +16,21 @@ const rules = ref<GatewayRule[]>([])
 const audit = ref<AuditEntry[]>([])
 const redactions = ref<RedactionEntry[]>([])
 const routes = ref<GatewayRoutes | null>(null)
+const connection = ref<ConnectionInfo | null>(null)
+const copiedKey = ref<string | null>(null)
 const loadError = ref<string | null>(null)
+
+async function copyToClipboard(text: string, key: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedKey.value = key
+    setTimeout(() => {
+      if (copiedKey.value === key) copiedKey.value = null
+    }, 1500)
+  } catch (e) {
+    alert(`Copy failed: ${(e as Error).message}`)
+  }
+}
 
 // Audit filters
 const auditFilterEndpointType = ref('')
@@ -66,18 +81,20 @@ function onAuditFilterChange() {
 async function loadAll() {
   loadError.value = null
   try {
-    const [s, r, a, rd, ro] = await Promise.all([
+    const [s, r, a, rd, ro, ci] = await Promise.all([
       gateway.stats(),
       gateway.listRules(),
       gateway.audit(50, {}),
       gateway.redactions(50),
       gateway.routes(),
+      gateway.connectionInfo(),
     ])
     stats.value = s
     rules.value = r
     audit.value = a
     redactions.value = rd
     routes.value = ro
+    connection.value = ci
   } catch (e) {
     loadError.value = (e as Error).message ?? 'Failed to load'
   }
@@ -138,6 +155,61 @@ onMounted(loadAll)
     </header>
 
     <p v-if="loadError" class="error">Load error: {{ loadError }}</p>
+
+    <section class="card">
+      <h2>Connection</h2>
+      <template v-if="connection">
+        <div class="conn-url">
+          <code class="conn-baseurl">{{ connection.baseUrl }}</code>
+          <button class="btn small" @click="copyToClipboard(connection.baseUrl, 'baseurl')">
+            {{ copiedKey === 'baseurl' ? '✓ copied' : 'Copy' }}
+          </button>
+          <span class="hint">source: <code>{{ connection.source }}</code></span>
+        </div>
+        <p class="hint" v-if="connection.source !== 'config:public-base-url'">
+          Auto-detected. На VDS за reverse-proxy задай <code>GATEWAY_PUBLIC_BASE_URL</code> или
+          пропусти заголовки <code>X-Forwarded-Proto</code> + <code>X-Forwarded-Host</code>.
+        </p>
+
+        <div class="conn-endpoints">
+          <div><b>Anthropic Messages API:</b> <code>{{ connection.anthropicEndpoint }}</code></div>
+          <div><b>OpenAI-compatible base URL:</b> <code>{{ connection.openaiBaseUrl }}</code></div>
+        </div>
+
+        <h3 class="conn-snippet-title">Claude Code CLI</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.claudeCodeEnv }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.claudeCodeEnv, 'claude')">
+            {{ copiedKey === 'claude' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+
+        <h3 class="conn-snippet-title">curl (Anthropic)</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.curlAnthropic }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.curlAnthropic, 'curl')">
+            {{ copiedKey === 'curl' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+
+        <h3 class="conn-snippet-title">OpenAI Python SDK</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.openaiSdkPython }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.openaiSdkPython, 'py')">
+            {{ copiedKey === 'py' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+
+        <h3 class="conn-snippet-title">OpenAI Node SDK</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.openaiSdkNode }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.openaiSdkNode, 'node')">
+            {{ copiedKey === 'node' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+      </template>
+      <p v-else class="hint">loading…</p>
+    </section>
 
     <section class="card">
       <h2>Stats</h2>
@@ -402,4 +474,11 @@ label { display: block; font-size: 13px; margin: 4px 0; }
 .badge-openai { background: #1a73e8; color: #fff; }
 .badge-anthropic { background: #c97c3e; color: #fff; }
 .badge-host { background: var(--color-surface-alt); padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-right: 4px; }
+.conn-url { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.conn-baseurl { font-size: 16px; font-weight: 600; padding: 6px 10px; background: var(--color-surface-alt); border-radius: 4px; }
+.conn-endpoints { margin: 12px 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.conn-snippet-title { font-size: 13px; margin: 14px 0 4px; color: var(--color-muted, #666); text-transform: uppercase; letter-spacing: 0.5px; }
+.snippet { position: relative; }
+.snippet pre { margin: 0; padding: 10px 50px 10px 12px; background: #1e1e1e; color: #d4d4d4; border-radius: 4px; font-size: 12px; overflow-x: auto; }
+.snippet-copy { position: absolute; top: 6px; right: 6px; }
 </style>

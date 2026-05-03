@@ -65,6 +65,21 @@ export interface GatewayRoutes {
   allowedHosts: string[]
 }
 
+export interface ConnectionExamples {
+  claudeCodeEnv: string
+  curlAnthropic: string
+  openaiSdkPython: string
+  openaiSdkNode: string
+}
+
+export interface ConnectionInfo {
+  baseUrl: string
+  source: string
+  anthropicEndpoint: string
+  openaiBaseUrl: string
+  examples: ConnectionExamples
+}
+
 export interface RedactionEntry {
   id: number
   ts: number
@@ -98,6 +113,9 @@ export const gateway = {
   },
   routes(): Promise<GatewayRoutes> {
     return gw.get<GatewayRoutes>('/api/admin/routes').then((r) => r.data)
+  },
+  connectionInfo(): Promise<ConnectionInfo> {
+    return gw.get<ConnectionInfo>('/api/admin/connection-info').then((r) => r.data)
   },
   audit(limit = 100, opts?: { endpointType?: string; model?: string }): Promise<AuditEntry[]> {
     const params = new URLSearchParams({ limit: String(limit) })

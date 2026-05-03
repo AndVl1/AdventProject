@@ -22,6 +22,10 @@ spring:
       schema-locations: classpath:schema.sql
 
 gateway:
+  # Public base URL the gateway is reachable at from clients (Claude Code CLI, OpenAI SDK).
+  # Used by /admin/connection-info to render copy-paste-ready snippets in the admin UI.
+  # Empty → fallback to X-Forwarded-Proto + X-Forwarded-Host headers, then to Host header.
+  public-base-url: ${GATEWAY_PUBLIC_BASE_URL:}
   upstream:
     base-url: ${GATEWAY_UPSTREAM_URL:https://openrouter.ai/api/v1}
     api-key: ${OPENROUTER_API_KEY:}
