@@ -58,7 +58,12 @@ class ProxyController(
     ): ResponseEntity<JsonNode> {
         val started = System.currentTimeMillis()
         val ip = clientIp(request)
-        val conversationId = conversationIdHeader?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+
+        // SEC-001: normalize client-supplied id and bind registry key to ip as proxy key
+        // ProxyController doesn't have x-api-key; use ip as namespace (less ideal but consistent)
+        // For full isolation, we use ip-based hash here since there's no api-key in this endpoint
+        val normalizedClientId = ConversationKey.normalize(conversationIdHeader) ?: UUID.randomUUID().toString()
+        val conversationId = ConversationKey.registryKey(ip, normalizedClientId)
 
         val rl = rateLimiter.check(ip)
         if (!rl.allowed) {
@@ -68,6 +73,7 @@ class ProxyController(
                     requestText = null, responseText = null,
                     status = "RATE_LIMITED", blockReason = "rate limit ${rateLimiter.limitPerMinute()}/min",
                     inputFindings = null, outputFindings = null, latencyMs = 0,
+                    endpointType = "openai",
                 ),
             )
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
@@ -152,6 +158,7 @@ class ProxyController(
                     status = "BLOCKED", blockReason = blockReason,
                     inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                     outputFindings = null, latencyMs = System.currentTimeMillis() - started,
+                    endpointType = "openai",
                 ),
             )
             return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
@@ -179,6 +186,7 @@ class ProxyController(
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
                         upstreamRequestJson = upstreamRequestJson,
                         upstreamResponseJson = null,
+                        endpointType = "openai",
                     ),
                 )
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
@@ -238,10 +246,13 @@ class ProxyController(
 
         // Cost tracking
         val usage = upstream["usage"]
+        var pt = 0
+        var ct = 0
+        var tt = 0
         if (usage != null && usage.isObject) {
-            val pt = usage["prompt_tokens"]?.asInt() ?: 0
-            val ct = usage["completion_tokens"]?.asInt() ?: 0
-            val tt = usage["total_tokens"]?.asInt() ?: (pt + ct)
+            pt = usage["prompt_tokens"]?.asInt() ?: 0
+            ct = usage["completion_tokens"]?.asInt() ?: 0
+            tt = usage["total_tokens"]?.asInt() ?: (pt + ct)
             val cost = costTable.estimateUsd(model, pt, ct)
             costs.insert(
                 CostRecord(
@@ -275,11 +286,16 @@ class ProxyController(
                 latencyMs = System.currentTimeMillis() - started,
                 upstreamRequestJson = upstreamRequestJson,
                 upstreamResponseJson = upstreamResponseJson,
+                endpointType = "openai",
+                promptTokens = pt,
+                completionTokens = ct,
+                totalTokens = tt,
             ),
         )
 
         return ResponseEntity.ok()
-            .header("X-Conversation-Id", conversationId)
+            // SEC-001: return only client-facing id (no apiKeyHash/ipHash exposed)
+            .header("X-Conversation-Id", normalizedClientId)
             .header("X-Gateway-Input-Redactions", allFindings.size.toString())
             .header("X-Gateway-Output-Hallucinated", hallucinatedTotal.toString())
             .header("X-Gateway-System-Prompt-Leak", leak.toString())

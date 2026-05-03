@@ -3,7 +3,9 @@ import { onMounted, ref } from 'vue'
 import {
   gateway,
   type AuditEntry,
+  type ConnectionInfo,
   type GatewayRule,
+  type GatewayRoutes,
   type GatewayStats,
   type RedactionEntry,
   type RuleUpsert,
@@ -13,7 +15,27 @@ const stats = ref<GatewayStats | null>(null)
 const rules = ref<GatewayRule[]>([])
 const audit = ref<AuditEntry[]>([])
 const redactions = ref<RedactionEntry[]>([])
+const routes = ref<GatewayRoutes | null>(null)
+const connection = ref<ConnectionInfo | null>(null)
+const copiedKey = ref<string | null>(null)
 const loadError = ref<string | null>(null)
+
+async function copyToClipboard(text: string, key: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedKey.value = key
+    setTimeout(() => {
+      if (copiedKey.value === key) copiedKey.value = null
+    }, 1500)
+  } catch (e) {
+    alert(`Copy failed: ${(e as Error).message}`)
+  }
+}
+
+// Audit filters
+const auditFilterEndpointType = ref('')
+const auditFilterModel = ref('')
+let auditDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const editing = ref<Partial<GatewayRule> | null>(null)
 const editingForm = ref<RuleUpsert>({
@@ -40,19 +62,39 @@ function prettyJson(s: string | null): string {
   }
 }
 
+async function loadAudit() {
+  const opts: { endpointType?: string; model?: string } = {}
+  if (auditFilterEndpointType.value) opts.endpointType = auditFilterEndpointType.value
+  if (auditFilterModel.value) opts.model = auditFilterModel.value
+  try {
+    audit.value = await gateway.audit(50, opts)
+  } catch (e) {
+    loadError.value = (e as Error).message ?? 'Failed to load audit'
+  }
+}
+
+function onAuditFilterChange() {
+  if (auditDebounceTimer) clearTimeout(auditDebounceTimer)
+  auditDebounceTimer = setTimeout(loadAudit, 300)
+}
+
 async function loadAll() {
   loadError.value = null
   try {
-    const [s, r, a, rd] = await Promise.all([
+    const [s, r, a, rd, ro, ci] = await Promise.all([
       gateway.stats(),
       gateway.listRules(),
-      gateway.audit(50),
+      gateway.audit(50, {}),
       gateway.redactions(50),
+      gateway.routes(),
+      gateway.connectionInfo(),
     ])
     stats.value = s
     rules.value = r
     audit.value = a
     redactions.value = rd
+    routes.value = ro
+    connection.value = ci
   } catch (e) {
     loadError.value = (e as Error).message ?? 'Failed to load'
   }
@@ -115,6 +157,61 @@ onMounted(loadAll)
     <p v-if="loadError" class="error">Load error: {{ loadError }}</p>
 
     <section class="card">
+      <h2>Connection</h2>
+      <template v-if="connection">
+        <div class="conn-url">
+          <code class="conn-baseurl">{{ connection.baseUrl }}</code>
+          <button class="btn small" @click="copyToClipboard(connection.baseUrl, 'baseurl')">
+            {{ copiedKey === 'baseurl' ? '✓ copied' : 'Copy' }}
+          </button>
+          <span class="hint">source: <code>{{ connection.source }}</code></span>
+        </div>
+        <p class="hint" v-if="connection.source !== 'config:public-base-url'">
+          Auto-detected. На VDS за reverse-proxy задай <code>GATEWAY_PUBLIC_BASE_URL</code> или
+          пропусти заголовки <code>X-Forwarded-Proto</code> + <code>X-Forwarded-Host</code>.
+        </p>
+
+        <div class="conn-endpoints">
+          <div><b>Anthropic Messages API:</b> <code>{{ connection.anthropicEndpoint }}</code></div>
+          <div><b>OpenAI-compatible base URL:</b> <code>{{ connection.openaiBaseUrl }}</code></div>
+        </div>
+
+        <h3 class="conn-snippet-title">Claude Code CLI</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.claudeCodeEnv }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.claudeCodeEnv, 'claude')">
+            {{ copiedKey === 'claude' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+
+        <h3 class="conn-snippet-title">curl (Anthropic)</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.curlAnthropic }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.curlAnthropic, 'curl')">
+            {{ copiedKey === 'curl' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+
+        <h3 class="conn-snippet-title">OpenAI Python SDK</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.openaiSdkPython }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.openaiSdkPython, 'py')">
+            {{ copiedKey === 'py' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+
+        <h3 class="conn-snippet-title">OpenAI Node SDK</h3>
+        <div class="snippet">
+          <pre><code>{{ connection.examples.openaiSdkNode }}</code></pre>
+          <button class="btn small snippet-copy" @click="copyToClipboard(connection.examples.openaiSdkNode, 'node')">
+            {{ copiedKey === 'node' ? '✓' : 'Copy' }}
+          </button>
+        </div>
+      </template>
+      <p v-else class="hint">loading…</p>
+    </section>
+
+    <section class="card">
       <h2>Stats</h2>
       <div v-if="stats" class="stats-grid">
         <div><b>Active conversations:</b> {{ stats.activeConversations }}</div>
@@ -124,6 +221,72 @@ onMounted(loadAll)
         <div><b>Requests by status:</b> {{ JSON.stringify(stats.requests) }}</div>
         <div><b>Redactions by rule:</b> {{ JSON.stringify(stats.redactionsByRule) }}</div>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Requests by Model</h2>
+      <template v-if="stats && stats.byModelAudit && stats.byModelAudit.length > 0">
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th><th>Endpoint</th><th>Count</th><th>Avg latency (ms)</th>
+              <th>Tokens (in / out / total)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(row, i) in [...(stats.byModelAudit)].sort((a, b) => b.count - a.count)"
+              :key="i"
+            >
+              <td>{{ row.model ?? '—' }}</td>
+              <td>
+                <span v-if="row.endpointType" :class="`badge badge-${row.endpointType}`">{{ row.endpointType }}</span>
+                <span v-else>—</span>
+              </td>
+              <td>{{ row.count }}</td>
+              <td>{{ row.avgLatencyMs != null ? row.avgLatencyMs.toFixed(0) : '—' }}</td>
+              <td>
+                <span v-if="row.totalTokens != null && row.totalTokens > 0">
+                  {{ (row.promptTokens ?? 0).toLocaleString() }}
+                  / {{ (row.completionTokens ?? 0).toLocaleString() }}
+                  / <b>{{ row.totalTokens.toLocaleString() }}</b>
+                </span>
+                <span v-else>—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
+      <p v-else class="hint">no data yet</p>
+    </section>
+
+    <section class="card">
+      <h2>Model → Endpoint Routes</h2>
+      <template v-if="routes">
+        <div class="stats-grid" style="margin-bottom: 12px;">
+          <div><b>Default upstream:</b> <code>{{ routes.default }}</code></div>
+          <div>
+            <b>Allowed hosts:</b>
+            <span v-if="routes.allowedHosts.length > 0">
+              <code v-for="h in routes.allowedHosts" :key="h" class="badge-host">{{ h }}</code>
+            </span>
+            <span v-else class="hint">none</span>
+          </div>
+        </div>
+        <template v-if="routes.routes.length > 0">
+          <table>
+            <thead><tr><th>Pattern</th><th>Base URL</th></tr></thead>
+            <tbody>
+              <tr v-for="(rt, i) in routes.routes" :key="i">
+                <td><code>{{ rt.pattern }}</code></td>
+                <td><code>{{ rt.baseUrl }}</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+        <p v-else class="hint">no custom routes — все запросы идут на default</p>
+      </template>
+      <p v-else class="hint">loading...</p>
     </section>
 
     <section class="card">
@@ -197,20 +360,57 @@ onMounted(loadAll)
 
     <section class="card">
       <h2>Recent audit ({{ audit.length }})</h2>
+      <div class="row audit-filters">
+        <label class="filter-label">
+          Endpoint type
+          <select v-model="auditFilterEndpointType" @change="onAuditFilterChange">
+            <option value="">All</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </label>
+        <label class="filter-label">
+          Model glob
+          <input
+            v-model="auditFilterModel"
+            placeholder="e.g. claude-*"
+            @input="onAuditFilterChange"
+            style="width: 180px;"
+          />
+        </label>
+      </div>
       <table>
-        <thead><tr><th>ts</th><th>status</th><th>model</th><th>ip</th><th>conv</th><th>lat</th><th>block</th><th></th></tr></thead>
+        <thead>
+          <tr>
+            <th>ts</th><th>status</th><th>model</th>
+            <th>Endpoint</th><th>Upstream</th>
+            <th>ip</th><th>conv</th><th>lat</th><th>tokens</th><th>block</th><th></th>
+          </tr>
+        </thead>
         <tbody>
           <tr v-for="a in audit" :key="a.id">
             <td>{{ fmtTs(a.ts) }}</td>
             <td :class="`st-${a.status.toLowerCase()}`">{{ a.status }}</td>
-            <td>{{ a.model }}</td><td>{{ a.clientIp }}</td>
+            <td>{{ a.model }}</td>
+            <td>
+              <span v-if="a.endpointType" :class="`badge badge-${a.endpointType}`">{{ a.endpointType }}</span>
+              <span v-else>—</span>
+            </td>
+            <td><code v-if="a.routedUpstream">{{ a.routedUpstream }}</code><span v-else>—</span></td>
+            <td>{{ a.clientIp }}</td>
             <td><code>{{ a.conversationId?.slice(0, 8) }}</code></td>
             <td>{{ a.latencyMs }}ms</td>
+            <td>
+              <span v-if="a.totalTokens != null && a.totalTokens > 0" :title="`in ${a.promptTokens ?? 0} / out ${a.completionTokens ?? 0}`">
+                {{ a.totalTokens.toLocaleString() }}
+              </span>
+              <span v-else>—</span>
+            </td>
             <td>{{ a.blockReason ?? '' }}</td>
             <td>
               <button
                 class="btn small"
-                :disabled="!a.upstreamRequestJson && !a.upstreamResponseJson"
+                :disabled="!a.upstreamRequestJson && !a.upstreamResponseJson && !a.responseText"
                 @click="inspecting = a"
               >JSON</button>
             </td>
@@ -236,7 +436,12 @@ onMounted(loadAll)
           </div>
           <div class="json-col">
             <h4>← Response от upstream</h4>
-            <pre class="json-pre">{{ prettyJson(inspecting.upstreamResponseJson) }}</pre>
+            <pre v-if="inspecting.upstreamResponseJson" class="json-pre">{{ prettyJson(inspecting.upstreamResponseJson) }}</pre>
+            <div v-else-if="inspecting.responseText">
+              <p class="hint">Stream: показан агрегированный текст (loggableText), полный JSON не сохраняется.</p>
+              <pre class="json-pre">{{ inspecting.responseText }}</pre>
+            </div>
+            <p v-else class="hint">Нет данных.</p>
           </div>
         </div>
       </div>
@@ -284,4 +489,18 @@ code { background: var(--color-surface-alt); padding: 1px 4px; border-radius: 2p
 }
 .hint { font-size: 12px; color: var(--color-text-muted, #888); margin-bottom: 4px; }
 label { display: block; font-size: 13px; margin: 4px 0; }
+.audit-filters { flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+.filter-label { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.filter-label select, .filter-label input { width: auto; }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+.badge-openai { background: #1a73e8; color: #fff; }
+.badge-anthropic { background: #c97c3e; color: #fff; }
+.badge-host { background: var(--color-surface-alt); padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-right: 4px; }
+.conn-url { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.conn-baseurl { font-size: 16px; font-weight: 600; padding: 6px 10px; background: var(--color-surface-alt); border-radius: 4px; }
+.conn-endpoints { margin: 12px 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.conn-snippet-title { font-size: 13px; margin: 14px 0 4px; color: var(--color-muted, #666); text-transform: uppercase; letter-spacing: 0.5px; }
+.snippet { position: relative; }
+.snippet pre { margin: 0; padding: 10px 50px 10px 12px; background: #1e1e1e; color: #d4d4d4; border-radius: 4px; font-size: 12px; overflow-x: auto; }
+.snippet-copy { position: absolute; top: 6px; right: 6px; }
 </style>

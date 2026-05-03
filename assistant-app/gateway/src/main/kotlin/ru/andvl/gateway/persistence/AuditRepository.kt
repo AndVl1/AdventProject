@@ -17,6 +17,12 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
         // Идемпотентно: на свежей БД колонки уже есть из schema.sql, ALTER упадёт → ловим.
         ensureColumn("audit_log", "upstream_request_json", "TEXT")
         ensureColumn("audit_log", "upstream_response_json", "TEXT")
+        // day14: новые поля endpoint_type и routed_upstream
+        ensureColumn("audit_log", "endpoint_type", "TEXT")
+        ensureColumn("audit_log", "routed_upstream", "TEXT")
+        ensureColumn("audit_log", "prompt_tokens", "INTEGER")
+        ensureColumn("audit_log", "completion_tokens", "INTEGER")
+        ensureColumn("audit_log", "total_tokens", "INTEGER")
     }
 
     private fun ensureColumn(table: String, col: String, type: String) {
@@ -41,6 +47,11 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
             latencyMs = rs.getObject("latency_ms")?.let { (it as Number).toLong() },
             upstreamRequestJson = rs.getString("upstream_request_json"),
             upstreamResponseJson = rs.getString("upstream_response_json"),
+            endpointType = rs.getString("endpoint_type"),
+            routedUpstream = rs.getString("routed_upstream"),
+            promptTokens = rs.getObject("prompt_tokens")?.let { (it as Number).toInt() },
+            completionTokens = rs.getObject("completion_tokens")?.let { (it as Number).toInt() },
+            totalTokens = rs.getObject("total_tokens")?.let { (it as Number).toInt() },
         )
     }
 
@@ -49,16 +60,55 @@ class AuditRepository(private val jdbc: JdbcTemplate) {
         jdbc.update(
             """INSERT INTO audit_log(ts, conversation_id, client_ip, model, request_text,
                 response_text, status, block_reason, input_findings, output_findings, latency_ms,
-                upstream_request_json, upstream_response_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""".trimIndent(),
+                upstream_request_json, upstream_response_json, endpoint_type, routed_upstream,
+                prompt_tokens, completion_tokens, total_tokens)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""".trimIndent(),
             audit.ts, audit.conversationId, audit.clientIp, audit.model, audit.requestText,
             audit.responseText, audit.status, audit.blockReason, audit.inputFindings, audit.outputFindings,
             audit.latencyMs, audit.upstreamRequestJson, audit.upstreamResponseJson,
+            audit.endpointType, audit.routedUpstream,
+            audit.promptTokens, audit.completionTokens, audit.totalTokens,
         )
     }
 
-    fun recent(limit: Int = 100): List<AuditLog> =
-        jdbc.query("SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?", mapper, limit)
+    fun recent(limit: Int = 100, endpointType: String? = null, modelFilter: String? = null): List<AuditLog> {
+        val sql = buildString {
+            append("SELECT * FROM audit_log WHERE 1=1")
+            if (endpointType != null) append(" AND endpoint_type = ?")
+            if (modelFilter != null) append(" AND model LIKE ?")
+            append(" ORDER BY ts DESC LIMIT ?")
+        }
+        val params = buildList<Any> {
+            if (endpointType != null) add(endpointType)
+            if (modelFilter != null) add(modelFilter.replace('*', '%').replace('?', '_'))
+            add(limit)
+        }
+        return jdbc.query(sql, mapper, *params.toTypedArray())
+    }
+
+    /** Per-model breakdown: model, endpoint_type, count, avg latency. */
+    fun byModelBreakdown(): List<Map<String, Any?>> =
+        jdbc.queryForList(
+            """SELECT model, endpoint_type,
+                      COUNT(*) AS cnt,
+                      AVG(latency_ms) AS avg_latency_ms,
+                      COALESCE(SUM(total_tokens), 0) AS total_tok,
+                      COALESCE(SUM(prompt_tokens), 0) AS prompt_tok,
+                      COALESCE(SUM(completion_tokens), 0) AS completion_tok
+               FROM audit_log
+               GROUP BY model, endpoint_type
+               ORDER BY cnt DESC""".trimIndent(),
+        ).map { row ->
+            mapOf(
+                "model" to row["model"],
+                "endpointType" to row["endpoint_type"],
+                "count" to (row["cnt"] as Number).toLong(),
+                "avgLatencyMs" to row["avg_latency_ms"]?.let { (it as Number).toLong() },
+                "totalTokens" to (row["total_tok"] as Number).toLong(),
+                "promptTokens" to (row["prompt_tok"] as Number).toLong(),
+                "completionTokens" to (row["completion_tok"] as Number).toLong(),
+            )
+        }
 
     fun stats(): Map<String, Long> {
         val counts = jdbc.queryForList(

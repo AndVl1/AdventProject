@@ -17,6 +17,18 @@ PID_FILE="$SCRIPT_DIR/.gateway.pid"
 ENV_FILE="$SCRIPT_DIR/../.env"
 MVNW="$SCRIPT_DIR/../backend/mvnw"
 
+# JVM ограничения для slim-окружения (VDS / dev-mac):
+# без -Xmx JVM берёт MaxRAMPercentage=25% от RAM (на 24G маке = 6G heap, на 32G = 8G).
+# Реальный footprint гейтвея — 200-500MB. 768MB heap с запасом.
+# +ExitOnOutOfMemoryError — упасть честно вместо OOM-thrashing.
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} \
+-Xms128m \
+-Xmx768m \
+-XX:MaxMetaspaceSize=256m \
+-XX:+ExitOnOutOfMemoryError \
+-XX:+UseG1GC \
+-XX:MaxGCPauseMillis=200"
+
 cmd_status() {
   if lsof -iTCP:"$PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
     local pid

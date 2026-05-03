@@ -3,10 +3,16 @@ dotenv:
 
 server:
   port: 8091
+  tomcat:
+    max-http-form-post-size: ${GATEWAY_MAX_BODY:20MB}
 
 spring:
   application:
     name: llm-gateway
+  servlet:
+    multipart:
+      max-request-size: ${GATEWAY_MAX_BODY:20MB}
+      max-file-size: ${GATEWAY_MAX_BODY:20MB}
   datasource:
     url: jdbc:sqlite:${GATEWAY_DB_PATH:./gateway.db}
     driver-class-name: org.sqlite.JDBC
@@ -16,9 +22,30 @@ spring:
       schema-locations: classpath:schema.sql
 
 gateway:
+  # Public base URL the gateway is reachable at from clients (Claude Code CLI, OpenAI SDK).
+  # Used by /admin/connection-info to render copy-paste-ready snippets in the admin UI.
+  # Empty → fallback to X-Forwarded-Proto + X-Forwarded-Host headers, then to Host header.
+  public-base-url: ${GATEWAY_PUBLIC_BASE_URL:}
   upstream:
     base-url: ${GATEWAY_UPSTREAM_URL:https://openrouter.ai/api/v1}
     api-key: ${OPENROUTER_API_KEY:}
+  anthropic:
+    base-url: ${GATEWAY_ANTHROPIC_URL:https://api.anthropic.com}
+    # Model routing table: first matching pattern wins (glob syntax: * = any chars, ? = single char)
+    # Leave routes empty to send everything to base-url (default / backward-compatible behavior)
+    routes: 
+      - pattern: "claude-*"
+        base-url: https://api.anthropic.com
+      - pattern: "glm-*"
+        base-url: https://api.z.ai/api/anthropic
+    # Example routes configuration:
+    # routes:
+    #   - pattern: "claude-*"
+    #     base-url: https://api.anthropic.com
+    #   - pattern: "qwen-*"
+    #     base-url: https://qwen.example.com
+    # All hosts from routes + base-url must be listed in allowed-hosts (SEC-004 SSRF protection)
+    allowed-hosts: ${GATEWAY_ANTHROPIC_ALLOWED_HOSTS:api.anthropic.com,api.z.ai}
   ratelimit:
     requests-per-minute: ${GATEWAY_RPM:60}
   redaction:
