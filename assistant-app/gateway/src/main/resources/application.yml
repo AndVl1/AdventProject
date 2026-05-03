@@ -33,7 +33,11 @@ gateway:
     base-url: ${GATEWAY_ANTHROPIC_URL:https://api.anthropic.com}
     # Model routing table: first matching pattern wins (glob syntax: * = any chars, ? = single char)
     # Leave routes empty to send everything to base-url (default / backward-compatible behavior)
-    routes: []
+    routes: 
+      - pattern: "claude-*"
+        base-url: https://api.anthropic.com
+      - pattern: "glm-*"
+        base-url: https://api.z.ai/api/anthropic
     # Example routes configuration:
     # routes:
     #   - pattern: "claude-*"
@@ -41,7 +45,7 @@ gateway:
     #   - pattern: "qwen-*"
     #     base-url: https://qwen.example.com
     # All hosts from routes + base-url must be listed in allowed-hosts (SEC-004 SSRF protection)
-    allowed-hosts: ${GATEWAY_ANTHROPIC_ALLOWED_HOSTS:api.anthropic.com}
+    allowed-hosts: ${GATEWAY_ANTHROPIC_ALLOWED_HOSTS:api.anthropic.com,api.z.ai}
   ratelimit:
     requests-per-minute: ${GATEWAY_RPM:60}
   redaction:
