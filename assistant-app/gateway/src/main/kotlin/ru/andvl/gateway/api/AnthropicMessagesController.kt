@@ -60,6 +60,38 @@ class AnthropicMessagesController(
 
     private val log = LoggerFactory.getLogger(AnthropicMessagesController::class.java)
 
+    // Дропаем при passthrough: hop-by-hop, наши внутренние, и те которые мы сами выставляем.
+    // Всё остальное — User-Agent, X-Stainless-*, X-App-*, Accept-* и пр. — Anthropic нужно
+    // для профилирования клиента (без них режут как «unknown proxy» → 429 без retry-after).
+    private val DROP_PASSTHROUGH_HEADERS = setOf(
+        "host", "content-length", "connection", "transfer-encoding", "keep-alive",
+        "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade",
+        "expect", "content-type",
+        // Если форвардить клиентский Accept-Encoding (gzip,br,zstd), OkHttp считает что
+        // декомпрессия — забота клиента, и отдаёт тело как есть. Парсер апстрим-ответа
+        // получает gzip-байты вместо JSON. Дроп → OkHttp сам ставит `gzip` и автоматом
+        // декодирует на приёме.
+        "accept-encoding",
+        "x-conversation-id",
+        "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-forwarded-port", "x-real-ip",
+        "x-api-key", "authorization",
+        "anthropic-version", "anthropic-beta",
+        "x-claude-code-session-id",
+    )
+
+    private fun collectPassthroughHeaders(req: HttpServletRequest): Map<String, List<String>> {
+        val out = LinkedHashMap<String, MutableList<String>>()
+        val names = req.headerNames ?: return emptyMap()
+        while (names.hasMoreElements()) {
+            val name = names.nextElement()
+            if (name.lowercase() in DROP_PASSTHROUGH_HEADERS) continue
+            val values = req.getHeaders(name)?.toList().orEmpty()
+            if (values.isEmpty()) continue
+            out.getOrPut(name) { mutableListOf() }.addAll(values)
+        }
+        return out
+    }
+
     private val REDACTION_NOTICE = """
         [GATEWAY NOTICE] Some user-supplied values were replaced with placeholders of the form
         `REDACTED_<TYPE>_<N>` (e.g. `REDACTED_OPENAI_KEY_1`, `REDACTED_EMAIL_2`). These
@@ -71,15 +103,27 @@ class AnthropicMessagesController(
 
     @PostMapping(path = ["/messages"], consumes = [MediaType.APPLICATION_JSON_VALUE])
     fun messages(
-        @RequestBody body: JsonNode,
+        @RequestBody rawBodyBytes: ByteArray,
         @RequestHeader(value = "x-api-key", required = false) apiKey: String?,
         @RequestHeader(value = "Authorization", required = false) authorization: String?,
         @RequestHeader(value = "anthropic-version", required = false) version: String?,
-        @RequestHeader(value = "anthropic-beta", required = false) beta: String?,
+        @RequestHeader(value = "anthropic-beta", required = false) betaSingle: String?,
         @RequestHeader(value = "X-Conversation-Id", required = false) conversationIdHeader: String?,
         request: HttpServletRequest,
         response: HttpServletResponse,
     ): Any? {
+        // anthropic-beta может приходить multi-value (несколько одноимённых заголовков
+        // ИЛИ comma-joined). Spring при @RequestHeader String отдаёт первый — теряем хвост
+        // (например `prompt-caching-2024-07-31`). Собираем все значения из request и склеиваем.
+        val beta: String? = run {
+            val multi = request.getHeaders("anthropic-beta")?.toList().orEmpty()
+            val joined = multi.flatMap { it.split(',') }.map { it.trim() }.filter { it.isNotBlank() }
+            if (joined.isNotEmpty()) joined.joinToString(",") else betaSingle?.takeIf { it.isNotBlank() }
+        }
+        // Доки Anthropic: X-Claude-Code-Session-Id шлёт каждый запрос CC. Форвардим в апстрим.
+        val claudeSessionId: String? = request.getHeader("X-Claude-Code-Session-Id")?.takeIf { it.isNotBlank() }
+        // Все клиентские headers кроме hop-by-hop / нашего overlay — pass-through в апстрим.
+        val passthrough = collectPassthroughHeaders(request)
         val started = System.currentTimeMillis()
         val ip = clientIp(request)
 
@@ -115,6 +159,15 @@ class AnthropicMessagesController(
         val normalizedClientId = ConversationKey.normalize(conversationIdHeader) ?: UUID.randomUUID().toString()
         val conversationId = ConversationKey.registryKey(authSecret, normalizedClientId)
 
+        // Парсим только для guard. Если guard ничего не модифицирует — отправляем оригинальные
+        // байты в апстрим (byte-identity). Любая ре-сериализация Jackson меняет форматирование
+        // (порядок keys, escape unicode, числа) → Anthropic prompt-cache prefix mismatch →
+        // каждый запрос идёт как полный input → ITPM blow → 429.
+        val body: JsonNode = runCatching { mapper.readTree(rawBodyBytes) }.getOrElse {
+            return ResponseEntity.badRequest()
+                .body(errorBody("invalid_request_error", "invalid JSON: ${it.message}"))
+        }
+
         // Rate limit check
         val rl = rateLimiter.check(ip)
         if (!rl.allowed) {
@@ -131,7 +184,6 @@ class AnthropicMessagesController(
                 .header("X-RateLimit-Reset-Ms", rl.resetMs.toString())
                 .body(errorBody("rate_limit_exceeded", "Too many requests. Reset in ${rl.resetMs}ms."))
         }
-
         if (!body.isObject) {
             return ResponseEntity.badRequest()
                 .body(errorBody("invalid_request_error", "JSON object expected"))
@@ -178,33 +230,56 @@ class AnthropicMessagesController(
                 .body(errorBody("input_blocked", blockReason))
         }
 
-        // Inject redaction notice if any findings
-        if (allFindings.isNotEmpty()) {
+        // Инжектим redaction notice ТОЛЬКО когда guard реально что-то замаскировал
+        // (`bodyMutated == true`). Notice добавляется в КОНЕЦ `system[]` — после всех
+        // существующих блоков с `cache_control`. Anthropic кэширует префикс UP TO каждого
+        // breakpoint, поэтому append-в-конец не ломает hash префикса (cache hit сохраняется).
+        // Если guard ничего не тронул — не инжектим вообще, чтобы не платить ~150 tok хвоста
+        // на чистых запросах. Подробности в KDoc у injectAnthropicRedactionNote.
+        if (walkResult.bodyMutated) {
             injectAnthropicRedactionNote(root)
         }
+        val modifiedRoot = walkResult.bodyMutated
 
-        val upstreamRequestJson = mapper.writeValueAsString(root)
+        // Byte-identity для апстрима: если guard ничего не тронул — шлём оригинальные байты.
+        // Иначе Jackson re-serialize ломает Anthropic prompt-cache (порядок ключей, escape,
+        // числа) → каждый запрос как полный input → ITPM → 429.
+        val upstreamBodyBytes: ByteArray = if (modifiedRoot) {
+            mapper.writeValueAsBytes(root)
+        } else {
+            rawBodyBytes
+        }
+        val upstreamRequestJson = String(upstreamBodyBytes)
         val stream = root["stream"]?.asBoolean(false) ?: false
         val routedBaseUrl = router.resolve(root["model"]?.asText())
+        // Direct CC sends `?beta=true` on /v1/messages; without it Anthropic load-sheds (429).
+        val upstreamQuery: String? = request.queryString?.takeIf { it.isNotBlank() }
+
+        // CC уже шлёт нужные caching beta (`prompt-caching-scope-2026-01-05` и пр.).
+        // Пробрасываем effectiveBeta верватим — без augmentation, чтобы не добавить
+        // конфликтующие/устаревшие beta'ы и не сломать routing на edge Anthropic.
+        val finalBeta = effectiveBeta
 
         return if (!stream) {
             handleNonStream(
-                root, effectiveApiKey, bearerToken, effectiveVersion, effectiveBeta,
+                root, upstreamBodyBytes, effectiveApiKey, bearerToken, effectiveVersion, finalBeta,
                 conversationId, normalizedClientId, ip, model, map, originalSystemPrompt,
                 redactedRequestText, allFindings, started, upstreamRequestJson, routedBaseUrl,
+                claudeSessionId, passthrough, upstreamQuery,
             )
         } else {
             handleStream(
-                root, effectiveApiKey, bearerToken, effectiveVersion, effectiveBeta,
+                root, upstreamBodyBytes, effectiveApiKey, bearerToken, effectiveVersion, finalBeta,
                 conversationId, normalizedClientId, ip, model, map,
                 redactedRequestText, allFindings, started, upstreamRequestJson, routedBaseUrl,
-                response,
+                response, claudeSessionId, passthrough, upstreamQuery,
             )
         }
     }
 
     private fun handleNonStream(
         root: ObjectNode,
+        bodyBytes: ByteArray,
         apiKey: String?,
         bearerToken: String?,
         version: String,
@@ -220,9 +295,14 @@ class AnthropicMessagesController(
         started: Long,
         upstreamRequestJson: String,
         routedBaseUrl: String,
+        claudeSessionId: String?,
+        passthroughHeaders: Map<String, List<String>>,
+        upstreamQuery: String?,
     ): ResponseEntity<*> {
         val routedHost = runCatching { URI.create(routedBaseUrl).host }.getOrNull() ?: routedBaseUrl
-        return when (val result = upstream.send(root, apiKey, bearerToken, version, beta, routedBaseUrl)) {
+        return when (val result = upstream.send(
+            bodyBytes, apiKey, bearerToken, version, beta, routedBaseUrl, claudeSessionId, passthroughHeaders, upstreamQuery,
+        )) {
             is UpstreamResult.Failure -> {
                 audit.insert(
                     AuditLog(
@@ -239,19 +319,32 @@ class AnthropicMessagesController(
                     .body(errorBody("upstream_error", "upstream call failed: ${result.cause.message}"))
             }
             is UpstreamResult.Error -> {
+                val upstreamErrType = result.errorJson?.get("error")?.get("type")?.asText()
+                val upstreamErrMsg = result.errorJson?.get("error")?.get("message")?.asText()
+                val reason = buildString {
+                    append("upstream_${result.status}")
+                    if (!upstreamErrType.isNullOrBlank()) append(":").append(upstreamErrType)
+                    if (!upstreamErrMsg.isNullOrBlank()) append(" — ").append(upstreamErrMsg.take(200))
+                }
                 audit.insert(
                     AuditLog(
                         conversationId = conversationId, clientIp = ip, model = model,
                         requestText = redactedRequestText, responseText = null,
-                        status = "ERROR", blockReason = "upstream_${result.status}",
+                        status = "ERROR", blockReason = reason,
                         inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
-                        upstreamRequestJson = upstreamRequestJson, upstreamResponseJson = null,
+                        upstreamRequestJson = upstreamRequestJson,
+                        upstreamResponseJson = result.rawBody,
                         endpointType = "anthropic", routedUpstream = routedHost,
                     ),
                 )
-                ResponseEntity.status(result.status)
-                    .body(result.errorJson ?: errorBody("upstream_error", "status=${result.status}"))
+                val builder = ResponseEntity.status(result.status)
+                // Форвардим upstream rate-limit headers клиенту — без retry-after и
+                // anthropic-ratelimit-* CC не знает когда retry'ить и колотит лимит дальше.
+                for ((name, value) in result.headers) {
+                    if (value.isNotBlank()) builder.header(name, value)
+                }
+                builder.body(result.errorJson ?: errorBody("upstream_error", "status=${result.status}"))
             }
             is UpstreamResult.Ok -> {
                 val json = result.json
@@ -361,6 +454,7 @@ class AnthropicMessagesController(
 
     private fun handleStream(
         root: ObjectNode,
+        bodyBytes: ByteArray,
         apiKey: String?,
         bearerToken: String?,
         version: String,
@@ -376,9 +470,14 @@ class AnthropicMessagesController(
         upstreamRequestJson: String,
         routedBaseUrl: String,
         response: HttpServletResponse,
+        claudeSessionId: String?,
+        passthroughHeaders: Map<String, List<String>>,
+        upstreamQuery: String?,
     ): Any? {
         val routedHost = runCatching { URI.create(routedBaseUrl).host }.getOrNull() ?: routedBaseUrl
-        return when (val result = upstream.sendStream(root, apiKey, bearerToken, version, beta, routedBaseUrl)) {
+        return when (val result = upstream.sendStream(
+            bodyBytes, apiKey, bearerToken, version, beta, routedBaseUrl, claudeSessionId, passthroughHeaders, upstreamQuery,
+        )) {
             is UpstreamStreamResult.Failure -> {
                 audit.insert(
                     AuditLog(
@@ -395,19 +494,30 @@ class AnthropicMessagesController(
                     .body(errorBody("upstream_error", "upstream call failed: ${result.cause.message}"))
             }
             is UpstreamStreamResult.Error -> {
+                val upstreamErrType = result.errorJson?.get("error")?.get("type")?.asText()
+                val upstreamErrMsg = result.errorJson?.get("error")?.get("message")?.asText()
+                val reason = buildString {
+                    append("upstream_${result.status}")
+                    if (!upstreamErrType.isNullOrBlank()) append(":").append(upstreamErrType)
+                    if (!upstreamErrMsg.isNullOrBlank()) append(" — ").append(upstreamErrMsg.take(200))
+                }
                 audit.insert(
                     AuditLog(
                         conversationId = conversationId, clientIp = ip, model = model,
                         requestText = redactedRequestText, responseText = null,
-                        status = "ERROR", blockReason = "upstream_${result.status}",
+                        status = "ERROR", blockReason = reason,
                         inputFindings = mapper.writeValueAsString(allFindings.groupingBy { it.ruleName }.eachCount()),
                         outputFindings = null, latencyMs = System.currentTimeMillis() - started,
-                        upstreamRequestJson = upstreamRequestJson, upstreamResponseJson = null,
+                        upstreamRequestJson = upstreamRequestJson,
+                        upstreamResponseJson = result.rawBody,
                         endpointType = "anthropic", routedUpstream = routedHost,
                     ),
                 )
-                ResponseEntity.status(result.status)
-                    .body(result.errorJson ?: errorBody("upstream_error", "status=${result.status}"))
+                val builder = ResponseEntity.status(result.status)
+                for ((name, value) in result.headers) {
+                    if (value.isNotBlank()) builder.header(name, value)
+                }
+                builder.body(result.errorJson ?: errorBody("upstream_error", "status=${result.status}"))
             }
             is UpstreamStreamResult.Ok -> {
                 response.status = HttpStatus.OK.value()
@@ -479,6 +589,7 @@ class AnthropicMessagesController(
         val blockReason: String?,
         val redactedRequestText: String,
         val originalSystemPrompt: String?,
+        val bodyMutated: Boolean,
     )
 
     private fun walkAndGuardInput(root: ObjectNode, map: RedactionMap, messages: ArrayNode): InputWalkResult {
@@ -486,6 +597,7 @@ class AnthropicMessagesController(
         var blockReason: String? = null
         val redactedRequestText = StringBuilder()
         var originalSystemPrompt: String? = null
+        var mutated = false
 
         // Handle system field (Anthropic format)
         val systemNode = root["system"]
@@ -499,7 +611,13 @@ class AnthropicMessagesController(
                     if (!decision.allow) {
                         blockReason = decision.blockReason
                     } else {
-                        root.put("system", decision.processedText)
+                        // Byte-identity: апдейтим JSON только если guard реально что-то изменил.
+                        // Иначе любая нормализация (trim, NFC, CRLF→LF) ломает Anthropic prompt-cache,
+                        // каждый запрос идёт как полный input → пробивает ITPM → 429 «temporarily limiting».
+                        if (decision.processedText != text) {
+                            root.put("system", decision.processedText)
+                            mutated = true
+                        }
                         redactedRequestText.append("[system] ").append(decision.processedText).append('\n')
                     }
                 }
@@ -516,7 +634,10 @@ class AnthropicMessagesController(
                                 blockReason = decision.blockReason
                                 break
                             }
-                            block.put("text", decision.processedText)
+                            if (decision.processedText != text) {
+                                block.put("text", decision.processedText)
+                                mutated = true
+                            }
                             redactedRequestText.append("[system] ").append(decision.processedText).append('\n')
                         }
                     }
@@ -525,7 +646,7 @@ class AnthropicMessagesController(
         }
 
         if (blockReason != null) {
-            return InputWalkResult(allFindings, blockReason, redactedRequestText.toString(), originalSystemPrompt)
+            return InputWalkResult(allFindings, blockReason, redactedRequestText.toString(), originalSystemPrompt, mutated)
         }
 
         // Walk messages
@@ -546,7 +667,10 @@ class AnthropicMessagesController(
                             blockReason = decision.blockReason
                             break
                         }
-                        msg.put("content", decision.processedText)
+                        if (decision.processedText != text) {
+                            msg.put("content", decision.processedText)
+                            mutated = true
+                        }
                         redactedRequestText.append("[$role] ").append(decision.processedText).append('\n')
                     }
                     contentNode.isArray -> {
@@ -566,7 +690,10 @@ class AnthropicMessagesController(
                                         blockReason = decision.blockReason
                                         break
                                     }
-                                    part.put("text", decision.processedText)
+                                    if (decision.processedText != text) {
+                                        part.put("text", decision.processedText)
+                                        mutated = true
+                                    }
                                     redactedRequestText.append("[$role] ").append(decision.processedText).append('\n')
                                 }
                                 "tool_result" -> {
@@ -582,7 +709,10 @@ class AnthropicMessagesController(
                                                     blockReason = decision.blockReason
                                                     break
                                                 }
-                                                part.put("content", decision.processedText)
+                                                if (decision.processedText != text) {
+                                                    part.put("content", decision.processedText)
+                                                    mutated = true
+                                                }
                                             }
                                             trContent.isArray -> {
                                                 for (k in 0 until trContent.size()) {
@@ -595,7 +725,10 @@ class AnthropicMessagesController(
                                                             blockReason = decision.blockReason
                                                             break
                                                         }
-                                                        trPart.put("text", decision.processedText)
+                                                        if (decision.processedText != text) {
+                                                            trPart.put("text", decision.processedText)
+                                                            mutated = true
+                                                        }
                                                     }
                                                 }
                                             }
@@ -616,6 +749,7 @@ class AnthropicMessagesController(
                                             runCatching {
                                                 val parsed = mapper.readTree(decision.processedText)
                                                 part.set<JsonNode>("input", parsed)
+                                                mutated = true
                                             }.onFailure {
                                                 log.warn("tool_use input guard parse failed: {}", it.message)
                                             }
@@ -632,9 +766,28 @@ class AnthropicMessagesController(
             if (blockReason != null) break
         }
 
-        return InputWalkResult(allFindings, blockReason, redactedRequestText.toString(), originalSystemPrompt)
+        return InputWalkResult(allFindings, blockReason, redactedRequestText.toString(), originalSystemPrompt, mutated)
     }
 
+    /**
+     * Append redaction notice to the END of `system[]` (after all existing blocks).
+     *
+     * Why append, not prepend: Anthropic ephemeral prompt-cache hashes the prefix UP TO each
+     * `cache_control` breakpoint. Inserting BEFORE existing breakpoints invalidates the prefix
+     * hash → every request becomes a full cache-miss → ITPM blow → 429 without retry-after.
+     * Appending AFTER the last block keeps the cached prefix intact: the cache still hits on
+     * everything up to the last existing breakpoint; the notice only adds ~150 tokens of
+     * uncached tail per request — acceptable, and only paid when guard actually masked
+     * something.
+     *
+     * The notice itself does NOT carry its own `cache_control`: that would consume a cache
+     * breakpoint slot (max 4) for marginal savings, since the tail is recomputed each request
+     * along with the new user turn anyway.
+     *
+     * For legacy `system: "string"` format (no breakpoints possible), we convert to array
+     * `[{text: original}, {text: notice}]`. This breaks byte-identity for that one request,
+     * but string format implies no prompt-cache anyway, so nothing is lost.
+     */
     private fun injectAnthropicRedactionNote(root: ObjectNode) {
         val noticeBlock = mapper.createObjectNode().apply {
             put("type", "text")
@@ -643,11 +796,10 @@ class AnthropicMessagesController(
 
         val systemNode = root["system"]
         val newSystemArray = mapper.createArrayNode()
-        newSystemArray.add(noticeBlock)
 
         when {
             systemNode == null || systemNode.isNull -> {
-                // nothing to prepend to; just set the notice
+                // no existing system; notice becomes the only block
             }
             systemNode.isTextual -> {
                 val existingBlock = mapper.createObjectNode().apply {
@@ -663,6 +815,7 @@ class AnthropicMessagesController(
             }
         }
 
+        newSystemArray.add(noticeBlock)
         root.set<ArrayNode>("system", newSystemArray)
     }
 
